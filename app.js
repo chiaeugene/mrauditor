@@ -1739,9 +1739,9 @@ async function deleteClient(id) {
 }
 
 /* ---------- evidence vault (Supabase Storage + evidence_files) ---------- */
-const DOCCATS = ['Bank statements & confirmations','Sales & receivables evidence','Purchases & payables evidence',
-  'Fixed asset register & invoices','Inventory count sheets','Payroll · EPF · SOCSO','SSM & statutory records',
-  'Tax — CP204 / Form C / assessments','Agreements & facility letters','Prior-year FS & working papers','Others'];
+const DOCCATS = ['Trial balance & management accounts','Bank statements & confirmations','Sales & receivables evidence',
+  'Purchases & payables evidence','Fixed asset register & invoices','Inventory count sheets','Payroll · EPF · SOCSO',
+  'SSM & statutory records','Tax — CP204 / Form C / assessments','Agreements & facility letters','Prior-year FS & working papers','Others'];
 const sanitizeName = n => n.replace(/[^\w.\-]+/g, '_');
 async function vaultListRows(clientId) {
   if (!sb || !authUser) return [];
@@ -2086,8 +2086,8 @@ function renderHome() {
 /* ---------- registration wizard ---------- */
 let regStep = 1;
 let regDraft = null;
-const REG_ATTACH_CATS = ['Prior-year FS & working papers','Bank statements & confirmations','SSM & statutory records',
-  'Tax — CP204 / Form C / assessments','Fixed asset register & invoices','Others'];
+const REG_ATTACH_CATS = ['Trial balance & management accounts','Prior-year FS & working papers','Bank statements & confirmations',
+  'SSM & statutory records','Tax — CP204 / Form C / assessments','Fixed asset register & invoices','Others'];
 function regOpen() {
   regStep = 1;
   regDraft = { directors:[{name:'',ic:''},{name:'',ic:''}], files:[] };
@@ -2122,7 +2122,7 @@ function regRenderAttach() {
     <div class="flex items-center gap-3 border border-line rounded-xl px-3.5 py-2.5">
       <div class="min-w-0 flex-1">
         <div class="font-medium text-[13.5px]">${cat}</div>
-        <div class="text-[11.5px] ${n?'text-ok font-medium':'text-mut'}">${n ? n + ' file(s) attached' : cat.startsWith('Prior')?'e.g. last year’s signed audit report':'optional now, add anytime'}</div>
+        <div class="text-[11.5px] ${n?'text-ok font-medium':'text-mut'}">${n ? n + ' file(s) attached' : cat.startsWith('Trial')?'the Excel/CSV trial balance from SQL Account, AutoCount, UBS, Xero…':cat.startsWith('Prior')?'e.g. last year’s signed audit report':'optional now, add anytime'}</div>
       </div>
       <label class="btn btn-ghost !py-1.5 cursor-pointer">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>
