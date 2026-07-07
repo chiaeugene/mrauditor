@@ -555,7 +555,7 @@ function deadlinesHTML() {
 const TITLES = { home:'Mr Auditor', register:'Register a company', dashboard:'Dashboard', setup:'Engagement Setup', tb:'Trial Balance',
   audit:'Audit Engine', wps:'Audit File — Working Papers', fs:'Financial Statements', tax:'Tax Computation',
   reports:'Reports & Sign-off', pack:'Full Audit Pack', vault:'Evidence Vault', toolkit:'Auditor Toolkit',
-  defence:'Defence & Positions', ref:'Regulatory Compass' };
+  defence:'Defence & Positions', ref:'Regulatory Compass', queries:'Queries, PBC & Audit Trail' };
 let current = 'dashboard';
 function show(scr) {
   current = scr;
@@ -576,7 +576,7 @@ function render(scr = current) {
   updateTop();
   ({ home:renderHome, register:renderRegister, dashboard:renderDashboard, setup:renderSetup, tb:renderTB, audit:renderAudit,
      wps:renderWps, fs:renderFS, tax:renderTax, reports:renderReports, pack:renderPack, vault:renderVault,
-     toolkit:renderToolkit, defence:renderDefence, ref:renderRef }[scr])();
+     toolkit:renderToolkit, defence:renderDefence, ref:renderRef, queries:renderQueriesScreen }[scr])();
 }
 function updateTop() {
   $('top-sub').textContent = S.setup.name
@@ -799,6 +799,7 @@ function importRows(rowArrays) {
   $('paste-result').innerHTML = `<span class="pill pill-ok">${added} imported</span> ${skipped?`<span class="pill pill-mut ml-1">${skipped} skipped</span>`:''}`;
   renderTB(); saveState();
   toast(`${added} accounts imported and classified`);
+  if (added) logActivity('Imported trial balance', `${added} account(s) imported, ${skipped} row(s) skipped`);
   return added;
 }
 function importPaste() {
@@ -938,11 +939,14 @@ function postAdj(fid) {
   S.findingStatus[fid] = 'adjusted';
   saveState(); renderAudit(); updateTop();
   toast('Adjustment posted — FS updated');
+  logActivity('Posted adjustment', `${f.title}: ${f.adj.desc}`);
 }
-function noteFinding(fid){ S.findingStatus[fid]='noted'; saveState(); renderAudit(); updateTop(); }
-function reopenFinding(fid){ delete S.findingStatus[fid];
+function noteFinding(fid){ const f = buildFindings().find(x=>x.id===fid); S.findingStatus[fid]='noted'; saveState(); renderAudit(); updateTop();
+  logActivity('Marked finding as noted', f ? f.title : fid); }
+function reopenFinding(fid){ const f = buildFindings().find(x=>x.id===fid); delete S.findingStatus[fid];
   S.adjustments = S.adjustments.filter(a => a.findingId !== fid);
-  saveState(); renderAudit(); updateTop(); }
+  saveState(); renderAudit(); updateTop();
+  logActivity('Reopened finding', f ? f.title : fid); }
 
 /* ---------- financial statements ---------- */
 function fsLine(label, val, opts={}) {
@@ -1769,6 +1773,163 @@ async function deleteClient(id) {
   await cloudDeleteEngagement(id).catch(()=>{});
 }
 
+/* ---------- immutable activity trail (F4) ---------- */
+/* Append-only by design: activity_log has no update/delete RLS policy, so
+   once written even the owner can't alter or erase a row via the API. */
+async function logActivity(action, detail) {
+  if (!sb || !authUser || !S || !S.id) return;
+  try {
+    await sb.from('activity_log').insert({
+      engagement_id: S.id, owner: authUser.id,
+      actor: authUser.email || authUser.id, action, detail: detail || null,
+    });
+  } catch (e) { console.error('activity log failed', e); }
+}
+async function activityList(clientId) {
+  if (!sb || !authUser) return [];
+  const { data, error } = await sb.from('activity_log').select('*').eq('engagement_id', clientId).order('created_at', { ascending:false }).limit(200);
+  return error ? [] : data;
+}
+function renderActivity(el) {
+  el.innerHTML = `<div class="card card-pad"><div class="flex items-center justify-between mb-3">
+    <div><div class="font-semibold text-[14px]">Activity trail</div>
+    <p class="text-[12.5px] text-mut">Every entry below is permanent — the database grants no update or delete on this table, even to the owner. This is what a practice reviewer means by an audit trail.</p></div></div>
+    <div id="activity-rows" class="text-[12.5px]">Loading…</div></div>`;
+  activityList(S.id).then(rows => {
+    $('activity-rows').innerHTML = rows.length ? rows.map(r => `
+      <div class="flex items-start gap-3 py-1.5 border-b border-line/60 last:border-0">
+        <span class="mono text-[11px] text-mut flex-none w-36">${new Date(r.created_at).toLocaleString('en-MY',{dateStyle:'medium',timeStyle:'short'})}</span>
+        <div class="min-w-0 flex-1"><span class="font-medium">${esc(r.action)}</span>${r.detail ? ` — <span class="text-mut">${esc(r.detail)}</span>` : ''}</div>
+        <span class="text-[11px] text-mut flex-none">${esc(r.actor)}</span>
+      </div>`).join('') : '<div class="text-mut py-2">Nothing logged yet — the trail fills in as the file is worked.</div>';
+  });
+}
+
+/* ---------- Query / PBC log (F2) ---------- */
+/* One table (`queries`), distinguished by kind: 'pbc' (prepared-by-client
+   requests, generated from what's still outstanding in the vault) or
+   'query' (ad-hoc points raised during fieldwork). Half of real fieldwork
+   is "please provide X" <-> client responds — this is that screen. */
+let qtTab = 'pbc';
+document.addEventListener('click', e => {
+  const b = e.target.closest('.qt-tab'); if (!b) return;
+  qtTab = b.dataset.qt;
+  document.querySelectorAll('.qt-tab').forEach(x => { x.classList.toggle('btn-pri', x===b); x.classList.toggle('btn-ghost', x!==b); });
+  renderQueriesScreen();
+});
+async function queriesList(kind) {
+  if (!sb || !authUser) return [];
+  let q = sb.from('queries').select('*').eq('engagement_id', S.id).order('raised_at', { ascending:false });
+  if (kind) q = q.eq('kind', kind);
+  const { data, error } = await q;
+  return error ? [] : data;
+}
+async function queryAdd(kind, question, category, wpRef) {
+  if (!question || !question.trim()) return;
+  const prefix = kind === 'pbc' ? 'PBC' : 'Q';
+  const existing = await queriesList(kind);
+  const ref = `${prefix}-${existing.length + 1}`;
+  const { error } = await sb.from('queries').insert({
+    engagement_id: S.id, owner: authUser.id, kind, ref, category: category || null, wp_ref: wpRef || null,
+    question: question.trim(), status: 'open',
+  });
+  if (error) { toast('Could not save — check your connection'); return; }
+  logActivity(kind === 'pbc' ? 'Raised PBC request' : 'Raised query', `${ref}: ${question.trim().slice(0,80)}`);
+  renderQueriesScreen();
+}
+async function queryRespond(id, ref, response) {
+  if (!response || !response.trim()) return;
+  const { error } = await sb.from('queries').update({ response: response.trim(), status: 'answered', responded_at: new Date().toISOString() }).eq('id', id);
+  if (error) { toast('Could not save response'); return; }
+  logActivity('Response recorded', ref);
+  renderQueriesScreen();
+}
+async function queryClose(id, ref) {
+  const { error } = await sb.from('queries').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', id);
+  if (error) { toast('Could not close'); return; }
+  logActivity('Closed', ref);
+  renderQueriesScreen();
+}
+async function queryReopen(id, ref) {
+  const { error } = await sb.from('queries').update({ status: 'open', closed_at: null }).eq('id', id);
+  if (error) return;
+  logActivity('Reopened', ref);
+  renderQueriesScreen();
+}
+const QSTATUS_PILL = { open:'pill-warn', answered:'pill-info', closed:'pill-ok' };
+function renderQueriesScreen() {
+  document.querySelectorAll('.qt-tab').forEach(x => { x.classList.toggle('btn-pri', x.dataset.qt===qtTab); x.classList.toggle('btn-ghost', x.dataset.qt!==qtTab); });
+  const el = $('qt-render');
+  if (!el) return;
+  if (qtTab === 'pbc') return qtPbc(el);
+  if (qtTab === 'log') return qtLog(el);
+  if (qtTab === 'activity') return renderActivity(el);
+}
+async function qtPbc(el) {
+  el.innerHTML = `<div class="text-mut">Loading…</div>`;
+  const [files, pbcs] = await Promise.all([vaultListRows(S.id), queriesList('pbc')]);
+  const filedCats = new Set(files.map(f => f.category));
+  const outstanding = DOCCATS.filter(c => !filedCats.has(c) && !pbcs.some(p => p.category === c && p.status !== 'closed'));
+  const open = pbcs.filter(p => p.status !== 'closed');
+  const closed = pbcs.filter(p => p.status === 'closed');
+  el.innerHTML = `
+    <div class="card card-pad mb-4">
+      <div class="font-semibold text-[14px] mb-1">Outstanding — not yet filed in the vault</div>
+      <p class="text-[12.5px] text-mut mb-2">Auto-generated from the evidence categories with nothing filed. One click turns any of these into a formal request.</p>
+      ${outstanding.length ? outstanding.map(c => `
+        <div class="flex items-center justify-between py-1.5 border-b border-line/60 last:border-0">
+          <span class="text-[13px]">${esc(c)}</span>
+          <button class="btn btn-ghost !py-1 !text-[11.5px]" onclick="queryAdd('pbc','Please provide: ${esc(c).replace(/'/g,"\\'")}','${esc(c).replace(/'/g,"\\'")}')">Request this</button>
+        </div>`).join('') : '<div class="text-mut py-1">Nothing outstanding — every evidence category has at least one file, or a request is already open.</div>'}
+    </div>
+    <div class="card card-pad mb-4">
+      <div class="flex items-center justify-between mb-2">
+        <div class="font-semibold text-[14px]">PBC requests (${open.length} open)</div>
+        <button class="btn btn-ghost !py-1.5 !text-[12px] no-print" onclick="window.print()">Print PBC letter</button>
+      </div>
+      ${open.length ? open.map(p => qtRow(p)).join('') : '<div class="text-mut py-1">No open PBC requests.</div>'}
+      ${closed.length ? `<div class="text-[11px] font-semibold uppercase tracking-wider text-mut mt-3 mb-1">Closed</div>${closed.map(p=>qtRow(p)).join('')}` : ''}
+    </div>`;
+}
+function qtRow(p) {
+  return `<div class="py-2 border-b border-line/60 last:border-0">
+    <div class="flex items-start gap-2">
+      <span class="mono text-[11px] text-mut flex-none w-14">${p.ref}</span>
+      <div class="min-w-0 flex-1">
+        <div class="text-[13px]">${esc(p.question)}</div>
+        ${p.response ? `<div class="text-[12px] text-mut mt-0.5"><span class="font-medium">Response:</span> ${esc(p.response)}</div>` : ''}
+        ${p.wp_ref ? `<div class="text-[11px] text-mut">raised from WP ${esc(p.wp_ref)}</div>` : ''}
+      </div>
+      <span class="pill ${QSTATUS_PILL[p.status]} flex-none">${p.status}</span>
+    </div>
+    ${p.status !== 'closed' ? `<div class="flex items-center gap-2 mt-1.5 pl-16 no-print">
+      ${p.status === 'open' ? `<input class="field !py-1 !text-[12px] flex-1" placeholder="Record the client's response…" id="resp-${p.id}">
+        <button class="btn btn-ghost !py-1 !text-[11.5px]" onclick="queryRespond('${p.id}','${p.ref}',$('resp-${p.id}').value)">Save response</button>` : ''}
+      <button class="btn btn-ghost !py-1 !text-[11.5px]" onclick="queryClose('${p.id}','${p.ref}')">Close</button>
+    </div>` : `<div class="pl-16 no-print"><button class="btn btn-ghost !py-1 !text-[11px]" onclick="queryReopen('${p.id}','${p.ref}')">Reopen</button></div>`}
+  </div>`;
+}
+async function qtLog(el) {
+  el.innerHTML = `<div class="text-mut">Loading…</div>`;
+  const qs = await queriesList('query');
+  const open = qs.filter(q => q.status !== 'closed');
+  const closed = qs.filter(q => q.status === 'closed');
+  el.innerHTML = `
+    <div class="card card-pad mb-4">
+      <div class="font-semibold text-[14px] mb-2">Raise a query</div>
+      <div class="flex flex-wrap gap-2">
+        <input class="field flex-1 !min-w-[240px]" id="qlog-new" placeholder="e.g. Please explain the RM45,000 movement in director's advances in March">
+        <input class="field !w-28" id="qlog-wpref" placeholder="WP ref (opt.)">
+        <button class="btn btn-pri" onclick="queryAdd('query', $('qlog-new').value, null, $('qlog-wpref').value); $('qlog-new').value=''; $('qlog-wpref').value='';">Raise query</button>
+      </div>
+    </div>
+    <div class="card card-pad">
+      <div class="font-semibold text-[14px] mb-2">Query log (${open.length} open)</div>
+      ${open.length ? open.map(q => qtRow(q)).join('') : '<div class="text-mut py-1">No open queries.</div>'}
+      ${closed.length ? `<div class="text-[11px] font-semibold uppercase tracking-wider text-mut mt-3 mb-1">Closed</div>${closed.map(q=>qtRow(q)).join('')}` : ''}
+    </div>`;
+}
+
 /* ---------- evidence vault (Supabase Storage + evidence_files) ---------- */
 const DOCCATS = ['Trial balance & management accounts','Bank statements & confirmations','Sales & receivables evidence',
   'Purchases & payables evidence','Fixed asset register & invoices','Inventory count sheets','Payroll · EPF · SOCSO',
@@ -1798,7 +1959,41 @@ async function vaultUpload(input) {
   let ok = 0;
   for (const f of files) if (await vaultUploadOne(f, cat, S.id)) ok++;
   toast(ok ? `${ok} file(s) filed under ${cat}` : 'Upload failed — check your connection');
+  if (ok) logActivity('Filed evidence', `${ok} file(s) under "${cat}"`);
   renderVault(); updateTop();
+}
+/* ---------- evidence tick-marks (F3) ---------- */
+/* "Evidence attached" is not "evidence tested" — a tick-mark is the auditor's
+   sighted/agreed/exception mark against one specific document. */
+let _ticksCache = {};
+let vaultTickOpen = null;
+async function ticksListAll(clientId) {
+  if (!sb || !authUser) return {};
+  const { data, error } = await sb.from('evidence_ticks').select('*').eq('engagement_id', clientId).order('created_at', { ascending:false });
+  const map = {};
+  if (!error) for (const t of data) (map[t.evidence_file_id] = map[t.evidence_file_id] || []).push(t);
+  return map;
+}
+function vaultTickToggle(fileId) { vaultTickOpen = vaultTickOpen === fileId ? null : fileId; renderVault(); }
+async function vaultTickSave(fileId, fileName) {
+  const status = $(`tick-status-${fileId}`).value;
+  const initials = $(`tick-initials-${fileId}`).value.trim();
+  const note = $(`tick-note-${fileId}`).value.trim();
+  if (!initials) { toast('Initials required to tick-mark evidence'); return; }
+  const { error } = await sb.from('evidence_ticks').insert({
+    evidence_file_id: fileId, engagement_id: S.id, owner: authUser.id,
+    status, initials, tick_date: dISO(new Date()), note: note || null,
+  });
+  if (error) { toast('Could not save tick-mark'); return; }
+  logActivity('Tick-marked evidence', `${fileName} — ${status} (${initials})`);
+  vaultTickOpen = null;
+  renderVault();
+}
+const TICK_STATUS_PILL = { agreed:'pill-ok', exception:'pill-risk', query:'pill-warn' };
+function tickBadges(ticks) {
+  if (!ticks || !ticks.length) return '<span class="pill pill-mut !text-[10px]">untested</span>';
+  const latest = ticks[0];
+  return `<span class="pill ${TICK_STATUS_PILL[latest.status]||'pill-mut'} !text-[10px]" title="${ticks.length} tick-mark(s) — latest by ${esc(latest.initials)} on ${dMY(latest.tick_date)}">${latest.status} · ${esc(latest.initials)}${ticks.length>1?` +${ticks.length-1}`:''}</span>`;
 }
 async function vaultRow(id) {
   const { data } = await sb.from('evidence_files').select('storage_path,file_name').eq('id', id).single();
@@ -1821,6 +2016,7 @@ async function vaultDelete(id) {
   const row = await vaultRow(id);
   if (row) await sb.storage.from('evidence').remove([row.storage_path]);
   await sb.from('evidence_files').delete().eq('id', id);
+  if (row) logActivity('Removed evidence', row.file_name);
   renderVault(); updateTop();
 }
 async function cloudDeleteEngagementFiles(id) {
@@ -1832,32 +2028,97 @@ const fmtSize = b => b > 1048576 ? (b/1048576).toFixed(1) + ' MB' : Math.max(1, 
 async function renderVault() {
   $('vault-cat').innerHTML = DOCCATS.map(c => `<option>${c}</option>`).join('');
   const files = await vaultListRows(S.id);
+  _ticksCache = await ticksListAll(S.id);
   $('vault-grid').innerHTML = DOCCATS.map(cat => {
     const fs = files.filter(f => f.category === cat);
     return `
     <div class="card card-pad">
       <div class="flex items-center justify-between mb-2">
         <div class="font-semibold text-[13.5px]">${cat}</div>
-        <span class="pill ${fs.length ? 'pill-ok':'pill-mut'}">${fs.length ? fs.length + ' filed' : 'outstanding'}</span>
+        <div class="flex items-center gap-1.5">
+          ${fs.length ? `<button class="btn btn-ghost !px-2 !py-1 !text-[11px]" onclick="vaultAnalyze('${esc(cat).replace(/'/g,"\\'")}')" title="AI reads every document filed in this category in full">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.7L19.6 10l-5.7 1.9L12 17.6l-1.9-5.7L4.4 10l5.7-1.9z"/></svg>
+            Analyze with AI</button>` : ''}
+          <span class="pill ${fs.length ? 'pill-ok':'pill-mut'}">${fs.length ? fs.length + ' filed' : 'outstanding'}</span>
+        </div>
       </div>
       ${fs.map(f => `
-        <div class="flex items-center gap-2 py-1.5 border-b border-line/60 last:border-0">
-          <svg viewBox="0 0 24 24" width="15" height="15" class="flex-none" fill="none" stroke="#3B49C9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
-          <button class="text-[12.5px] font-medium text-indigo hover:underline truncate flex-1 text-left" onclick="vaultView('${f.id}')" title="View ${esc(f.file_name)}">${esc(f.file_name)}</button>
-          <span class="text-[11px] text-mut mono flex-none">${fmtSize(f.size_bytes)}</span>
-          <button class="btn btn-ghost !px-1.5 !py-1 flex-none" onclick="vaultDownload('${f.id}')" aria-label="Download">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
-          </button>
-          <button class="btn btn-ghost !px-1.5 !py-1 flex-none" onclick="vaultDelete('${f.id}')" aria-label="Delete">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#B91C1C" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
-          </button>
+        <div class="border-b border-line/60 last:border-0">
+          <div class="flex items-center gap-2 py-1.5">
+            <svg viewBox="0 0 24 24" width="15" height="15" class="flex-none" fill="none" stroke="#3B49C9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
+            <button class="text-[12.5px] font-medium text-indigo hover:underline truncate flex-1 text-left" onclick="vaultView('${f.id}')" title="View ${esc(f.file_name)}">${esc(f.file_name)}</button>
+            <span class="text-[11px] text-mut mono flex-none">${fmtSize(f.size_bytes)}</span>
+            ${tickBadges(_ticksCache[f.id])}
+            <button class="btn btn-ghost !px-1.5 !py-1 flex-none" onclick="vaultTickToggle('${f.id}')" aria-label="Tick-mark" title="Tick-mark this evidence">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+            </button>
+            <button class="btn btn-ghost !px-1.5 !py-1 flex-none" onclick="vaultDownload('${f.id}')" aria-label="Download">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+            </button>
+            <button class="btn btn-ghost !px-1.5 !py-1 flex-none" onclick="vaultDelete('${f.id}')" aria-label="Delete">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#B91C1C" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+          ${vaultTickOpen === f.id ? `
+          <div class="bg-paper rounded-lg p-2.5 mb-2 flex flex-wrap items-end gap-2">
+            <div><label class="fieldlbl">Status</label>
+              <select class="field !py-1.5 !text-[12px]" id="tick-status-${f.id}">
+                <option value="agreed">Agreed — sighted &amp; agrees to GL</option>
+                <option value="exception">Exception</option>
+                <option value="query">Query raised</option>
+              </select></div>
+            <div><label class="fieldlbl">Initials</label><input class="field !py-1.5 !w-20 !text-[12px]" id="tick-initials-${f.id}" maxlength="6"></div>
+            <div class="flex-1 min-w-[140px]"><label class="fieldlbl">Note</label><input class="field !py-1.5 !text-[12px]" id="tick-note-${f.id}" placeholder="optional"></div>
+            <button class="btn btn-pri !py-1.5 !text-[12px]" onclick="vaultTickSave('${f.id}', '${esc(f.file_name).replace(/'/g,"\\'")}')">Save tick</button>
+            ${(_ticksCache[f.id]||[]).length ? `<div class="w-full text-[11px] text-mut mt-1">${(_ticksCache[f.id]||[]).map(t=>`${dMY(t.tick_date)} · ${esc(t.status)} · ${esc(t.initials)}${t.note?` — ${esc(t.note)}`:''}`).join('<br>')}</div>` : ''}
+          </div>` : ''}
         </div>`).join('') || `<div class="flex items-center gap-2 py-1 text-mut">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>
           <span class="text-[12px]">Nothing filed yet — upload above.</span>
         </div>`}
+      <div id="vault-analysis-${cat.replace(/[^\w]/g,'_')}"></div>
     </div>`;
   }).join('');
   staggerChildren('vault-grid', 45);
+}
+/* ---------- document intelligence: AI reads the actual filed evidence ---------- */
+/* Attaches real files (native PDF/image reading via the edge function) rather
+   than a filename link — the answer is grounded in what's actually on the
+   page, and anything that can't be read is reported back explicitly, never
+   silently dropped. */
+async function vaultAnalyze(cat) {
+  const slot = $('vault-analysis-' + cat.replace(/[^\w]/g,'_'));
+  if (!slot) return;
+  const files = (await vaultListRows(S.id)).filter(f => f.category === cat);
+  if (!files.length) return;
+  slot.innerHTML = `<div class="border border-indigo/30 rounded-xl p-3 mt-2 bg-white">
+    <div class="flex items-center gap-2"><span class="pill pill-info">Mr Auditor AI</span>
+    <span class="text-[12px] text-mut">reading ${files.length} document(s) in full…</span></div></div>`;
+  try {
+    const result = await aiRequestDocs(
+      `Analyze every document filed under "${cat}" for this engagement. Extract the concrete facts an auditor needs: key figures, dates, parties, balances, terms, anomalies, or anything that contradicts the trial balance/context. Be specific and cite which document each fact comes from. End with a short list of follow-up questions or evidence still needed, if any.`,
+      files.map(f => f.id));
+    slot.innerHTML = `<div class="border border-indigo/30 rounded-xl p-3 mt-2 bg-white">
+      <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-2"><span class="pill pill-info">Mr Auditor AI</span>
+        <span class="text-[11px] text-mut">${result.documentsRead || 0} document(s) read in full</span></div>
+        <button class="btn btn-ghost !py-1 !text-[11.5px]" onclick="vaultAnalyzeToWp('${cat.replace(/'/g,"\\'")}', this)">Add to a working paper</button>
+      </div>
+      ${result.skipped && result.skipped.length ? `<div class="text-[11.5px] text-warn mb-2">Not read: ${result.skipped.map(s=>`${esc(s.name)} (${esc(s.reason)})`).join('; ')}</div>` : ''}
+      <div class="text-[13px] leading-relaxed" data-ai-text="${encodeURIComponent(result.answer||'')}">${aiFormat(result.answer || '')}</div>
+    </div>`;
+  } catch (e) {
+    slot.innerHTML = `<div class="border border-line rounded-xl p-3 mt-2 text-[12.5px] text-mut">Could not analyze: ${esc(e.message||'unknown error')}</div>`;
+  }
+}
+function vaultAnalyzeToWp(cat, btn) {
+  const box = btn.closest('div.border').querySelector('[data-ai-text]');
+  const text = decodeURIComponent(box.dataset.aiText);
+  const ref = prompt('Which working paper reference should this be added to? (e.g. C, F, A5)');
+  if (!ref) return;
+  const existing = wpGet(`plan.notes.${ref}`, '');
+  wpSet(`plan.notes.${ref}`, (existing ? existing + '\n\n' : '') + `[AI document analysis — ${cat}, ${dMY(dISO(new Date()))}]\n${text}`);
+  toast(`Added to working paper ${ref}`);
 }
 
 /* ---------- Ask Mr Auditor — account intelligence ---------- */
@@ -3189,12 +3450,17 @@ async function wpLead([ref, title, cats, evCat]) {
   const kb = [...new Set(cats.flatMap(c => (KB[c] || { p: [] }).p))];
   const asserts = [...new Set(cats.map(c => (KB[c] || {}).a).filter(Boolean))].join(' · ');
   let evHTML = '<p class="text-[12.5px] text-mut">Sign in to see vault evidence.</p>';
+  let evFileIds = [];
   try {
     const files = (await vaultListRows(S.id)).filter(f => f.category === evCat);
+    evFileIds = files.map(f => f.id);
     evHTML = files.length ? files.map(f => `
       <div class="flex items-center gap-2 py-1 text-[12.5px]">
         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#0071E3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
         <button class="text-indigo hover:underline" onclick="vaultView('${f.id}')">${esc(f.file_name)}</button></div>`).join('')
+      + `<button class="btn btn-ghost !py-1 !text-[11.5px] mt-1" onclick="wpAnalyzeEvidence('${ref}','${evCat.replace(/'/g,"\\'")}')">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.7L19.6 10l-5.7 1.9L12 17.6l-1.9-5.7L4.4 10l5.7-1.9z"/></svg>
+          Analyze this evidence with AI</button><div id="wp-analysis-${ref}"></div>`
       : `<p class="text-[12.5px] text-warn">No evidence filed under “${evCat}” yet — <button class="text-indigo hover:underline" onclick="show('vault')">open the vault</button>.</p>`;
   } catch (e) {}
   return wpChrome(ref, title + ' — lead schedule', `ties to FS · assertions: ${asserts || '—'}`, `
@@ -3248,7 +3514,41 @@ async function wpLead([ref, title, cats, evCat]) {
           ${excAmt > 0 ? ` · <span class="${projected > mat.pm ? 'text-risk' : 'text-warn'} font-semibold">projected misstatement ${fmtRM(projected)}</span>` : ''}</span>
       </div>
       ${projected > 0 ? `<p class="text-[12px] ${projected > mat.overall ? 'text-risk' : 'text-warn'} mt-1">Projected misstatement ${projected > mat.overall ? 'EXCEEDS overall materiality — extend testing or propose an adjustment (Audit Engine → AJE register)' : 'is below overall materiality — carry to the ISA 450 evaluation (B2) as an uncorrected item if not adjusted'}.</p>` : ''}
-    </div>`);
+    </div>
+    ${wpNotes(`plan.notes.${ref}`, 'Facts extracted from evidence, testing observations…')}`);
+}
+async function wpAnalyzeEvidence(ref, evCat) {
+  const slot = $('wp-analysis-' + ref);
+  if (!slot) return;
+  const files = (await vaultListRows(S.id)).filter(f => f.category === evCat);
+  if (!files.length) return;
+  slot.innerHTML = `<div class="border border-indigo/30 rounded-xl p-3 mt-2 bg-white">
+    <div class="flex items-center gap-2"><span class="pill pill-info">Mr Auditor AI</span>
+    <span class="text-[12px] text-mut">reading ${files.length} document(s) in full…</span></div></div>`;
+  try {
+    const result = await aiRequestDocs(
+      `You are testing the "${ref}" lead schedule. Read every document filed as its evidence ("${evCat}") in full and extract the concrete facts relevant to this audit area: figures, dates, counterparties, balances confirmed, terms, and anything that agrees or disagrees with the trial balance figures already in your context. Cite the specific document for each fact.`,
+      files.map(f => f.id));
+    slot.innerHTML = `<div class="border border-indigo/30 rounded-xl p-3 mt-2 bg-white">
+      <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-2"><span class="pill pill-info">Mr Auditor AI</span>
+        <span class="text-[11px] text-mut">${result.documentsRead || 0} document(s) read in full</span></div>
+        <button class="btn btn-ghost !py-1 !text-[11.5px]" onclick="wpAnalyzeToNotes('${ref}', this)">Add to notes below</button>
+      </div>
+      ${result.skipped && result.skipped.length ? `<div class="text-[11.5px] text-warn mb-2">Not read: ${result.skipped.map(s=>`${esc(s.name)} (${esc(s.reason)})`).join('; ')}</div>` : ''}
+      <div class="text-[13px] leading-relaxed" data-ai-text="${encodeURIComponent(result.answer||'')}">${aiFormat(result.answer || '')}</div>
+    </div>`;
+    logActivity('Analyzed evidence with AI', `${ref} · ${result.documentsRead||0} document(s), ${(result.skipped||[]).length} skipped`);
+  } catch (e) {
+    slot.innerHTML = `<div class="border border-line rounded-xl p-3 mt-2 text-[12.5px] text-mut">Could not analyze: ${esc(e.message||'unknown error')}</div>`;
+  }
+}
+function wpAnalyzeToNotes(ref, btn) {
+  const text = decodeURIComponent(btn.closest('div.border').querySelector('[data-ai-text]').dataset.aiText);
+  const existing = wpGet(`plan.notes.${ref}`, '');
+  wpSet(`plan.notes.${ref}`, (existing ? existing + '\n\n' : '') + `[AI document analysis, ${dMY(dISO(new Date()))}]\n${text}`);
+  wpShow(ref);
+  toast('Added to working paper notes');
 }
 
 /* ---------- audit file screen ---------- */
@@ -3289,16 +3589,25 @@ function renderWps() { wpIndexRefresh(); wpShow(curWp); }
    DEFENCE & POSITIONS — AI position papers + cross-examination
    ============================================================ */
 async function aiRequest(question) {
+  const r = await aiRequestDocs(question, []);
+  return r.answer;
+}
+/* Document-grounded AI call — passes real vault document IDs through to the
+   edge function, which downloads them and attaches them to Claude natively
+   (full PDF/image reading, not a filename reference). Returns
+   { answer, skipped, documentsRead } — skipped[] must always be surfaced to
+   the user, never swallowed, so nothing is "read" silently only in name. */
+async function aiRequestDocs(question, documentIds) {
   const { data: { session } } = await sb.auth.getSession();
   if (!session) throw new Error('Sign in to use the AI');
   const res = await fetch(`${SUPABASE_URL}/functions/v1/ask-mr-auditor`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': SUPABASE_ANON_KEY },
-    body: JSON.stringify({ question, context: aiContext() }),
+    body: JSON.stringify({ question, context: aiContext(), documentIds: documentIds && documentIds.length ? documentIds : undefined }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.error) throw new Error(data.error || `AI service error (${res.status})`);
-  return data.answer || '';
+  return { answer: data.answer || '', skipped: data.skipped || [], documentsRead: data.documentsRead || 0 };
 }
 function defenceTopics() {
   const base = [

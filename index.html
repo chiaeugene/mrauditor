@@ -193,6 +193,10 @@ tailwind.config = {
         <span>9 · Full Audit Pack</span>
       </div>
       <div class="text-[10px] font-semibold uppercase tracking-wider text-white/35 px-3 pt-4 pb-1">Tools &amp; reference</div>
+      <div class="navlink" data-scr="queries">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/><path d="M12 8v4M12 15h.01"/></svg>
+        <span>Queries, PBC &amp; Trail</span>
+      </div>
       <div class="navlink" data-scr="defence">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/><path d="M9 12h6M12 9v6"/></svg>
         <span>Defence &amp; Positions (AI)</span>
@@ -384,6 +388,16 @@ tailwind.config = {
         <button class="btn btn-ghost tk-tab" data-tk="data">Export / import</button>
       </div>
       <div id="tk-render"></div>
+    </section>
+
+    <!-- ================= QUERIES, PBC & AUDIT TRAIL ================= -->
+    <section class="screen" id="scr-queries">
+      <div class="flex flex-wrap gap-2 mb-5 no-print" id="qt-tabs">
+        <button class="btn btn-pri qt-tab" data-qt="pbc">PBC requests</button>
+        <button class="btn btn-ghost qt-tab" data-qt="log">Query log</button>
+        <button class="btn btn-ghost qt-tab" data-qt="activity">Activity trail</button>
+      </div>
+      <div id="qt-render"></div>
     </section>
 
     <!-- ================= EVIDENCE VAULT ================= -->
