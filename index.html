@@ -97,6 +97,11 @@ tailwind.config = {
       </div>
     </div>
     <nav class="px-3 space-y-1 flex-1 overflow-y-auto pb-4" id="sidenav">
+      <div class="navlink" data-scr="clients">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+        <span>Clients &amp; Engagements</span>
+        <span id="nav-client-count" class="ml-auto text-[10px] bg-white/10 rounded-full px-1.5 py-0.5"></span>
+      </div>
       <div class="navlink active" data-scr="dashboard">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
         Dashboard
@@ -130,6 +135,11 @@ tailwind.config = {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 016.5 22H20V7l-5-5H6.5A2.5 2.5 0 004 4.5z"/><path d="M15 2v5h5"/><path d="M8 13h8M8 17h5"/></svg>
         <span>7 · Full Audit Pack</span>
       </div>
+      <div class="navlink" data-scr="vault">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="13" rx="2"/><path d="M8 8V6a4 4 0 018 0v2"/><circle cx="12" cy="14" r="2"/><path d="M12 16v2"/></svg>
+        <span>8 · Evidence Vault</span>
+        <span id="nav-vault-count" class="ml-auto text-[10px] bg-white/10 rounded-full px-1.5 py-0.5"></span>
+      </div>
       <div class="text-[10px] font-semibold uppercase tracking-wider text-white/35 px-3 pt-4 pb-1">Reference</div>
       <div class="navlink" data-scr="ref">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
@@ -154,6 +164,11 @@ tailwind.config = {
         <div id="top-sub" class="text-[12px] text-mut truncate">No engagement loaded</div>
       </div>
       <div class="ml-auto flex items-center gap-2">
+        <button class="btn btn-ghost" onclick="askOpen()" title="Ask Mr Auditor (Ctrl+K)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <span class="hidden md:inline">Ask Mr Auditor</span>
+          <span class="hidden md:inline mono text-[10px] text-mut border border-line rounded px-1">Ctrl K</span>
+        </button>
         <span id="top-status" class="pill pill-mut">Not started</span>
         <button class="btn btn-ghost hidden sm:inline-flex" onclick="loadDemo()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
@@ -171,6 +186,39 @@ tailwind.config = {
     <aside id="mobile-nav" class="fixed inset-y-0 left-0 w-64 bg-ink text-white z-40 -translate-x-full transition-transform lg:hidden"></aside>
 
     <main class="px-4 lg:px-8 py-6 max-w-[1200px]">
+
+    <!-- ================= CLIENTS ================= -->
+    <section class="screen" id="scr-clients">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div>
+          <h2 class="font-bold text-[17px]">Clients &amp; engagements</h2>
+          <p class="text-[13px] text-mut">Every audit file the firm is running — click one to work on it.</p>
+        </div>
+        <button class="btn btn-pri" onclick="newClientPrompt()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          New engagement
+        </button>
+      </div>
+      <div id="clients-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
+    </section>
+
+    <!-- ================= EVIDENCE VAULT ================= -->
+    <section class="screen" id="scr-vault">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div>
+          <h2 class="font-bold text-[17px]">Evidence vault</h2>
+          <p class="text-[13px] text-mut">Audit evidence filed per engagement — stored locally in this browser. Click to view, download any file.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <select class="field !w-64" id="vault-cat"></select>
+          <label class="btn btn-pri cursor-pointer">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>
+            Upload files<input type="file" multiple class="hidden" id="vault-file" onchange="vaultUpload(this)">
+          </label>
+        </div>
+      </div>
+      <div id="vault-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+    </section>
 
     <!-- ================= DASHBOARD ================= -->
     <section class="screen active" id="scr-dashboard">
@@ -462,6 +510,24 @@ tailwind.config = {
 
     <!-- ================= FULL AUDIT PACK ================= -->
     <section class="screen" id="scr-pack">
+      <div class="card card-pad mb-4 no-print">
+        <div class="flex items-center justify-between mb-1">
+          <h2 class="font-bold text-[15px]">Note details — kill every placeholder</h2>
+          <span id="ph-count" class="pill pill-warn">checking…</span>
+        </div>
+        <p class="text-[12px] text-mut mb-4">The engine drafts what it can compute; these are the facts only the audit file knows. Fill them once and the bracketed placeholders across the notes pack disappear.</p>
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div><label class="fieldlbl">Credit terms granted to customers</label><input class="field note-in" id="n-termsGiven" placeholder="e.g. 30 to 90 days"></div>
+          <div><label class="fieldlbl">Credit terms received from suppliers</label><input class="field note-in" id="n-termsRecd" placeholder="e.g. 30 to 60 days"></div>
+          <div><label class="fieldlbl">Depreciation rates by class</label><input class="field note-in" id="n-deprRates" placeholder="e.g. Plant 10%, Motor vehicles 20%, Office 10%"></div>
+          <div><label class="fieldlbl">Fixed deposit interest rate(s) % p.a.</label><input class="field note-in" id="n-fdRate" placeholder="e.g. 2.50% to 3.10%"></div>
+          <div><label class="fieldlbl">Borrowings — security &amp; guarantee</label><input class="field note-in" id="n-borrSec" placeholder="e.g. charge over factory + directors' joint guarantee"></div>
+          <div><label class="fieldlbl">Borrowings — interest rate(s)</label><input class="field note-in" id="n-borrRate" placeholder="e.g. BLR − 1.75% (eff. 4.85%)"></div>
+          <div><label class="fieldlbl">HP payable within 12 months (RM)</label><input class="field mono note-in" id="n-hpCurrent" placeholder="e.g. 48,000"></div>
+          <div><label class="fieldlbl">Auditors' remuneration (RM)</label><input class="field mono note-in" id="n-auditFee" placeholder="per engagement letter"></div>
+          <div><label class="fieldlbl">Directors' remuneration (RM)</label><input class="field mono note-in" id="n-dirRem" placeholder="if not on the TB"></div>
+        </div>
+      </div>
       <div class="flex flex-wrap items-center gap-2 mb-4 no-print">
         <div class="text-[13px] text-mut max-w-xl">The complete statutory set in lodgement order — cover, contents, directors' report, statements with note cross-references, and the full notes pack. Everything regenerates live from the adjusted trial balance.</div>
         <button class="btn btn-pri ml-auto" onclick="printSection('pack-render')">
@@ -478,6 +544,22 @@ tailwind.config = {
     </section>
 
     </main>
+  </div>
+</div>
+
+<!-- Ask Mr Auditor palette -->
+<div id="ask-overlay" class="fixed inset-0 bg-ink/60 z-50 hidden" onclick="if(event.target===this) askClose()">
+  <div class="max-w-2xl mx-auto mt-[8vh] bg-white rounded-2xl shadow-2xl overflow-hidden border border-line">
+    <div class="flex items-center gap-3 px-4 py-3 border-b border-line">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#3B49C9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      <input id="ask-input" class="flex-1 outline-none text-[15px]" placeholder="Ask about any account — “trade receivables”, “director”, or a topic: materiality, deadlines, opinion, tax…" oninput="askSearch()" autocomplete="off">
+      <button class="btn btn-ghost !py-1 !px-2 !text-[11px]" onclick="askClose()">Esc</button>
+    </div>
+    <div id="ask-results" class="max-h-[62vh] overflow-y-auto p-3 space-y-2"></div>
+    <div class="px-4 py-2 border-t border-line text-[11px] text-mut flex gap-4">
+      <span>Mr Auditor answers from the engagement data — balances, movements, risk, procedures, findings.</span>
+      <span class="ml-auto mono">Ctrl K</span>
+    </div>
   </div>
 </div>
 

@@ -22,11 +22,28 @@ const BLANK = () => ({
   tax: { entertain:'', fines:'', donations:'', otherAdd:'', exemptInc:'', ca:'', losses:'', cp204:'' },
   sign: { firm:'', af:'', partner:'', approval:'', place:'', date:'', opinion:'unmodified',
           goingconcern:false, otherinfo:true },
+  notes: {},              // note-detail inputs that kill the FS-notes placeholders
   repTab: 'auditor'
 });
+const nid = () => 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+
+/* Multi-client: DB holds every engagement; S always points at the active one. */
+let DB = { ver:2, activeId:null, clients:[] };
 let S = BLANK();
-let uid = 1;
-const nid = () => 'r' + (uid++);
+function newClient(label) {
+  const c = Object.assign(BLANK(), { id:nid(), created: Date.now() });
+  if (label) c.setup.name = label;
+  DB.clients.push(c);
+  switchClient(c.id);
+  return c;
+}
+function switchClient(id) {
+  const c = DB.clients.find(x => x.id === id);
+  if (!c) return;
+  DB.activeId = id; S = c;
+  saveState();
+}
+function activeClient(){ return DB.clients.find(c => c.id === DB.activeId); }
 
 /* ---------------- utils ---------------- */
 const $ = id => document.getElementById(id);
@@ -477,9 +494,9 @@ function deadlinesHTML() {
    ============================================================ */
 
 /* ---------- navigation ---------- */
-const TITLES = { dashboard:'Dashboard', setup:'Engagement Setup', tb:'Trial Balance',
+const TITLES = { clients:'Clients & Engagements', dashboard:'Dashboard', setup:'Engagement Setup', tb:'Trial Balance',
   audit:'Audit Engine', fs:'Financial Statements', tax:'Tax Computation',
-  reports:'Reports & Sign-off', pack:'Full Audit Pack', ref:'Regulatory Compass' };
+  reports:'Reports & Sign-off', pack:'Full Audit Pack', vault:'Evidence Vault', ref:'Regulatory Compass' };
 let current = 'dashboard';
 function show(scr) {
   current = scr;
@@ -498,12 +515,14 @@ function closeNav(){ $('mobile-nav').classList.add('-translate-x-full'); $('nav-
 
 function render(scr = current) {
   updateTop();
-  ({ dashboard:renderDashboard, setup:renderSetup, tb:renderTB, audit:renderAudit,
-     fs:renderFS, tax:renderTax, reports:renderReports, pack:renderPack, ref:renderRef }[scr])();
+  ({ clients:renderClients, dashboard:renderDashboard, setup:renderSetup, tb:renderTB, audit:renderAudit,
+     fs:renderFS, tax:renderTax, reports:renderReports, pack:renderPack, vault:renderVault, ref:renderRef }[scr])();
 }
 function updateTop() {
   $('top-sub').textContent = S.setup.name
-    ? `${S.setup.name} · FYE ${dMY(S.setup.fye)} · ${S.setup.framework}` : 'No engagement loaded';
+    ? `${S.setup.name} · FYE ${dMY(S.setup.fye)} · ${S.setup.framework}` : 'New engagement — set up the client';
+  document.querySelectorAll('#nav-client-count').forEach(el => el.textContent = DB.clients.length);
+  vaultCount().then(n => document.querySelectorAll('#nav-vault-count').forEach(el => el.textContent = n)).catch(()=>{});
   const st = $('top-status');
   if (!S.tb.length) { st.className='pill pill-mut'; st.textContent='Not started'; return; }
   const ev = evaluate();
@@ -656,7 +675,9 @@ function renderTB() {
       <td class="num"><input class="field mono !py-1.5 !text-[13px] !text-right !w-28" value="${r.dr?fmt(num(r.dr)):''}" onchange="tbEdit(${i},'dr',this.value)"></td>
       <td class="num"><input class="field mono !py-1.5 !text-[13px] !text-right !w-28" value="${r.cr?fmt(num(r.cr)):''}" onchange="tbEdit(${i},'cr',this.value)"></td>
       <td class="num"><input class="field mono !py-1.5 !text-[13px] !text-right !w-28" value="${r.py?fmt(num(r.py)):''}" onchange="tbEdit(${i},'py',this.value)" placeholder="–"></td>
-      <td><button class="btn btn-ghost !px-1.5 !py-1" onclick="S.tb.splice(${i},1); renderTB(); saveState()" aria-label="Delete row">
+      <td class="!whitespace-nowrap"><button class="btn btn-ghost !px-1.5 !py-1" onclick="askAccount('${r.id}')" aria-label="Mr Auditor analysis" title="Mr Auditor analysis">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#3B49C9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      </button><button class="btn btn-ghost !px-1.5 !py-1" onclick="S.tb.splice(${i},1); renderTB(); saveState()" aria-label="Delete row">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#B91C1C" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/></svg>
       </button></td>
     </tr>`).join('') || '<tr><td colspan="6" class="text-center text-mut py-8">No accounts yet — paste a TB on the right, or load the demo from the top bar.</td></tr>';
@@ -938,19 +959,22 @@ function cashflowHTML(m, p) {
   const net = ops + taxPaid + invFlow + finFlow;
   const openCash = p.nat.CASH - p.nat.OD, closeCash = m.nat.CASH - m.nat.OD;
   const gap = closeCash - openCash - net;
+  // single-column line helper: the cash flow reports CY movements only
+  const cl = (label, val, opts={}) => `<tr class="${opts.total?'fs-total':opts.line?'fs-line':''}">
+    <td class="${opts.indent?'pl-5':''}">${label}</td><td class="num" style="width:120px">${fmt(val, true)}</td></tr>`;
   return `<table>
-    ${fsLine('Profit / (loss) before taxation', m.pbt)}
-    ${fsLine('Depreciation and amortisation', dep, {indent:1})}
-    ${fsLine('Finance costs', m.fin, {indent:1})}
-    ${fsLine('Changes in working capital', ops - m.pbt - dep - m.fin, {indent:1})}
-    ${fsLine('Cash from / (used in) operations', ops, {line:1})}
-    ${fsLine('Tax paid', taxPaid, {indent:1})}
-    ${fsLine('Net cash — investing activities', invFlow)}
-    ${fsLine('Net cash — financing activities (incl. interest paid)', finFlow)}
-    ${fsLine('Net movement in cash and cash equivalents', net, {line:1})}
-    ${fsLine('Cash and cash equivalents at beginning (net of overdrafts)', openCash)}
-    ${fsLine('Cash and cash equivalents at end (net of overdrafts)', closeCash, {total:1})}
-    ${Math.abs(gap) > 1 ? fsLine('Unreconciled movement (check share issues / disposals / opening balances)', gap) : ''}
+    ${cl('Profit / (loss) before taxation', m.pbt)}
+    ${cl('Depreciation and amortisation', dep, {indent:1})}
+    ${cl('Finance costs', m.fin, {indent:1})}
+    ${cl('Changes in working capital', ops - m.pbt - dep - m.fin, {indent:1})}
+    ${cl('Cash from / (used in) operations', ops, {line:1})}
+    ${cl('Tax paid', taxPaid, {indent:1})}
+    ${cl('Net cash — investing activities', invFlow)}
+    ${cl('Net cash — financing activities (incl. interest paid)', finFlow)}
+    ${cl('Net movement in cash and cash equivalents', net, {line:1})}
+    ${cl('Cash and cash equivalents at beginning (net of overdrafts)', openCash)}
+    ${cl('Cash and cash equivalents at end (net of overdrafts)', closeCash, {total:1})}
+    ${Math.abs(gap) > 1 ? cl('Unreconciled movement (check share issues / disposals / opening balances)', gap) : ''}
   </table>`;
 }
 
@@ -1029,7 +1053,6 @@ function renderTax() {
     </table>
     ${underEst ? `<div class="mt-3 p-2.5 rounded-lg bg-warnbg text-warn text-[12.5px] font-medium">CP204 underestimation: actual tax exceeds the estimate by more than 30% — the excess over the 30% buffer attracts a 10% penalty under s.107C(10). Consider CP204 revisions (6th/9th month) next year.</div>` : ''}
     <div class="mt-3 text-[12px] text-mut">Capital allowance quick rates (IA/AA): heavy machinery 20/20 · general plant 20/14 · office equipment &amp; furniture 20/10 · computers &amp; ICT 20/20 (accelerated options exist) · motor vehicles 20/20 (non-commercial QE capped at RM50k–RM100k). Compute per asset in the CA schedule and enter the total above.</div>`;
-  const effRate = ci > 0 ? tax / ci * 100 : 0;
 }
 document.addEventListener('input', e => {
   if (e.target.classList && e.target.classList.contains('tax-in')) {
@@ -1050,6 +1073,13 @@ function bindSign() {
 }
 document.addEventListener('change', e => {
   if (e.target.classList && e.target.classList.contains('rep-in')) { bindSign(); saveState(); renderReportDoc(); }
+  if (e.target.classList && e.target.classList.contains('note-in')) {
+    const NMAP = { 'n-termsGiven':'termsGiven','n-termsRecd':'termsRecd','n-deprRates':'deprRates','n-fdRate':'fdRate',
+      'n-borrSec':'borrSec','n-borrRate':'borrRate','n-hpCurrent':'hpCurrent','n-auditFee':'auditFee','n-dirRem':'dirRem' };
+    if (!S.notes) S.notes = {};
+    S.notes[NMAP[e.target.id]] = e.target.value.trim();
+    saveState(); renderPack();
+  }
 });
 document.addEventListener('click', e => {
   const b = e.target.closest('.rep-tab'); if (!b) return;
@@ -1189,14 +1219,17 @@ function repDirectorsHTML() {
 }
 function repStatementHTML() {
   const { name, reg, fye, fw } = repCtx();
+    const sole = S.directors.length === 1;
+    const who = sole ? `I, ${esc(S.directors[0].name)}, being the sole director`
+      : `We, ${esc(S.directors[0]?.name) || '[Director 1]'} and ${esc(S.directors[1]?.name) || '[Director 2]'}, being two of the directors`;
     return `
       <h2 class="text-center">${name.toUpperCase()}<br><span class="text-[12px] font-normal">(Registration No. ${reg}) (Incorporated in Malaysia)</span></h2>
       <h3 class="text-center">STATEMENT BY DIRECTORS<br><span class="font-normal text-[12px]">Pursuant to Section 251(2) of the Companies Act 2016</span></h3>
-      <p>We, ${esc(S.directors[0]?.name) || '[Director 1]'} and ${esc(S.directors[1]?.name) || '[Director 2]'}, being two of the directors of ${name}, do hereby state that, in the opinion of the directors, the accompanying financial statements are drawn up in accordance with the ${fw} and the requirements of the Companies Act 2016 in Malaysia so as to give a true and fair view of the financial position of the Company as at ${fye} and of its financial performance and cash flows for the financial year then ended.</p>
+      <p>${who} of ${name}, do hereby state that, in the opinion of the director${sole?'':'s'}, the accompanying financial statements are drawn up in accordance with the ${fw} and the requirements of the Companies Act 2016 in Malaysia so as to give a true and fair view of the financial position of the Company as at ${fye} and of its financial performance and cash flows for the financial year then ended.</p>
       <p>Signed on behalf of the Board in accordance with a resolution of the directors:</p>
       <div class="mt-10 grid grid-cols-2 gap-10" style="max-width:36rem">
         <div style="border-top:1px solid #0B1437; padding-top:.4rem"><strong>${esc(S.directors[0]?.name) || '[Director 1]'}</strong><br>Director</div>
-        <div style="border-top:1px solid #0B1437; padding-top:.4rem"><strong>${esc(S.directors[1]?.name) || '[Director 2]'}</strong><br>Director</div>
+        ${sole ? '<div></div>' : `<div style="border-top:1px solid #0B1437; padding-top:.4rem"><strong>${esc(S.directors[1]?.name) || '[Director 2]'}</strong><br>Director</div>`}
       </div>
       <p class="mt-6">${esc(S.sign.place) || '[Place]'}<br>Date: ${S.sign.date ? dMY(S.sign.date) : '[Date]'}</p>`;
 }
@@ -1261,6 +1294,9 @@ function buildNotes() {
   const m = model(), p = hasPY() ? model(true) : null;
   const g = k => m.nat[k], gp = k => p ? p.nat[k] : 0;
   let n = 3; // 1 general, 2 basis, 3 policies
+  let ph = 0; // unresolved placeholders
+  const N = S.notes || {};
+  const nv = (val, fallback) => val ? esc(val) : (ph++, fallback);
   const map = {}; const blocks = [];
   const two = (cy, py) => `<td class="num" style="width:110px">${fmt(cy,true)}</td>${p?`<td class="num text-mut" style="width:110px">${fmt(py,true)}</td>`:''}`;
   const noteHead = p ? `<tr><th></th><th class="num text-[10px] text-mut">${new Date(S.setup.fye).getFullYear()}<br>RM</th><th class="num text-[10px] text-mut">${new Date(S.setup.fye).getFullYear()-1}<br>RM</th></tr>` : '';
@@ -1286,27 +1322,27 @@ function buildNotes() {
         <tr class="fs-line"><td class="pl-4">At end of year</td><td class="num">${fmt(g('ACCDEP'))}</td></tr>
         <tr class="fs-total"><td>Net book value</td><td class="num">${fmt(m.ppeNet)}</td></tr>
       </table>
-      <p class="text-[12px] text-mut">Depreciation is provided on a straight-line basis over the estimated useful lives of the assets. [Insert rates per class from the fixed asset register.]</p>`);
+      <p class="text-[12px] text-mut">Depreciation is provided on a straight-line basis over the estimated useful lives of the assets at the following principal annual rates: ${nv(N.deprRates,'[insert rates per class from the fixed asset register]')}.</p>`);
   }
   if (g('INTANG')) add('INTANG','Intangible assets', `<table class="fs-doc">${noteHead}<tr class="fs-total"><td>Carrying amount</td>${two(g('INTANG'), gp('INTANG'))}</tr></table>`);
   if (g('INVEST')) add('INVEST','Investments', `<table class="fs-doc">${noteHead}<tr class="fs-total"><td>At cost</td>${two(g('INVEST'), gp('INVEST'))}</tr></table>`);
   if (g('INV')) add('INV','Inventories', `<table class="fs-doc">${noteHead}<tr class="fs-total"><td>At cost / net realisable value</td>${two(g('INV'), gp('INV'))}</tr></table>
     <p class="text-[12px] text-mut">Inventories are stated at the lower of cost (first-in, first-out) and net realisable value.</p>`);
   if (g('TR')) add('TR','Trade receivables', `<table class="fs-doc">${noteHead}<tr class="fs-total"><td>Trade receivables</td>${two(g('TR'), gp('TR'))}</tr></table>
-    <p class="text-[12px] text-mut">The Company's normal trade credit terms range from [30] to [90] days. Receivables are recognised at transaction price less impairment for amounts assessed as uncollectible.</p>`);
+    <p class="text-[12px] text-mut">The Company's normal trade credit terms granted to customers range from ${nv(N.termsGiven,'[30 to 90 days]')}. Receivables are recognised at transaction price less impairment for amounts assessed as uncollectible.</p>`);
   if (g('OR')) add('OR','Other receivables, deposits and prepayments', `<table class="fs-doc">${noteHead}<tr class="fs-total"><td>Other receivables, deposits and prepayments</td>${two(g('OR'), gp('OR'))}</tr></table>`);
   if (g('DIRADV')) add('DIRADV','Amount owing by directors', `<table class="fs-doc">${noteHead}<tr class="fs-total"><td>Amount owing by directors</td>${two(g('DIRADV'), gp('DIRADV'))}</tr></table>
     <p class="text-[12px] text-mut">The amount owing is non-trade in nature, unsecured, interest-free and repayable on demand. <em>[Confirm terms — see s.224/225 CA 2016 and s.140B ITA considerations.]</em></p>`);
   if (g('RPTREC')) add('RPTREC','Amount owing by related parties', `<table class="fs-doc">${noteHead}<tr class="fs-total"><td>Amount owing by related parties</td>${two(g('RPTREC'), gp('RPTREC'))}</tr></table>
     <p class="text-[12px] text-mut">Non-trade, unsecured, interest-free and repayable on demand.</p>`);
   if (g('FD')) add('FD','Fixed deposits with licensed banks', `<table class="fs-doc">${noteHead}<tr class="fs-total"><td>Fixed deposits with licensed banks</td>${two(g('FD'), gp('FD'))}</tr></table>
-    <p class="text-[12px] text-mut">The fixed deposits earn interest at [x.xx]% per annum and have maturities of [12] months or less. [State any lien/pledge as security for banking facilities.]</p>`);
+    <p class="text-[12px] text-mut">The fixed deposits earn interest at ${nv(N.fdRate,'[x.xx]%')} per annum. [Confirm maturity and any lien/pledge via the bank confirmation.]</p>`);
   add('CASH','Cash and bank balances', `<table class="fs-doc">${noteHead}<tr class="fs-total"><td>Cash and bank balances</td>${two(g('CASH'), gp('CASH'))}</tr></table>
     ${g('OD') ? `<p class="text-[12px] text-mut">For the purpose of the statement of cash flows, cash and cash equivalents comprise cash and bank balances net of bank overdrafts of ${fmtRM(g('OD'))}.</p>`:''}`);
   add('SC','Share capital', `<table class="fs-doc">${noteHead}<tr class="fs-total"><td>Issued and fully paid ordinary shares</td>${two(g('SC'), gp('SC') || g('SC'))}</tr></table>
     <p class="text-[12px] text-mut">Under the Companies Act 2016, shares have no par value. The holders of ordinary shares are entitled to receive dividends as declared and are entitled to one vote per share.</p>`);
   if (g('TP')) add('TP','Trade payables', `<table class="fs-doc">${noteHead}<tr class="fs-total"><td>Trade payables</td>${two(g('TP'), gp('TP'))}</tr></table>
-    <p class="text-[12px] text-mut">The normal trade credit terms granted to the Company range from [30] to [90] days.</p>`);
+    <p class="text-[12px] text-mut">The normal trade credit terms granted to the Company range from ${nv(N.termsRecd,'[30 to 90 days]')}.</p>`);
   if (g('OP')) add('OP','Other payables and accruals', `<table class="fs-doc">${noteHead}<tr class="fs-total"><td>Other payables and accruals</td>${two(g('OP'), gp('OP'))}</tr></table>`);
   if (g('DIROWE')) add('DIROWE','Amount owing to directors', `<table class="fs-doc">${noteHead}<tr class="fs-total"><td>Amount owing to directors</td>${two(g('DIROWE'), gp('DIROWE'))}</tr></table>
     <p class="text-[12px] text-mut">Non-trade in nature, unsecured, interest-free and repayable on demand.</p>`);
@@ -1315,9 +1351,16 @@ function buildNotes() {
     ${g('OD')?`<tr><td>Bank overdraft (secured)</td>${two(g('OD'), gp('OD'))}</tr>`:''}
     ${g('BORR')?`<tr><td>Term loans (secured)</td>${two(g('BORR'), gp('BORR'))}</tr>`:''}
     <tr class="fs-total"><td>Total</td>${two(g('BORR')+g('OD'), gp('BORR')+gp('OD'))}</tr></table>
-    <p class="text-[12px] text-mut">The borrowings are secured by [state security — e.g. facilities agreement, charge over property, directors' joint and several guarantees] and bear interest at [x.xx]% per annum.</p>`);
-  if (g('HP')) add('HP','Hire purchase payables', `<table class="fs-doc">${noteHead}<tr class="fs-total"><td>Hire purchase payables</td>${two(g('HP'), gp('HP'))}</tr></table>
-    <p class="text-[12px] text-mut">[Split the minimum payments between amounts repayable within one year and later than one year per the HP schedules.]</p>`);
+    <p class="text-[12px] text-mut">The borrowings are secured by ${nv(N.borrSec,'[state security — e.g. charge over property, directors’ joint and several guarantees]')} and bear interest at ${nv(N.borrRate,'[x.xx]% per annum')}.</p>`);
+  if (g('HP')) {
+    const hpCur = num(N.hpCurrent);
+    add('HP','Hire purchase payables', hpCur ? `<table class="fs-doc">${noteHead}
+      <tr><td>Repayable within one year</td>${two(hpCur, 0)}</tr>
+      <tr><td>Repayable after one year</td>${two(g('HP')-hpCur, 0)}</tr>
+      <tr class="fs-total"><td>Total</td>${two(g('HP'), gp('HP'))}</tr></table>`
+    : `<table class="fs-doc">${noteHead}<tr class="fs-total"><td>Hire purchase payables</td>${two(g('HP'), gp('HP'))}</tr></table>
+    <p class="text-[12px] text-mut">${nv('','[Split the minimum payments between amounts repayable within one year and later than one year per the HP schedules.]')}</p>`);
+  }
   if (g('DEFTAX')) add('DEFTAX','Deferred tax liability', `<table class="fs-doc">${noteHead}<tr class="fs-total"><td>Deferred tax liability</td>${two(g('DEFTAX'), gp('DEFTAX'))}</tr></table>`);
   // revenue
   add('REV','Revenue', `<table class="fs-doc">${noteHead}<tr class="fs-total"><td>${esc(S.setup.activity) ? 'Revenue from ' + esc(S.setup.activity) : 'Revenue from contracts with customers'}</td>${two(m.revenue, p?p.revenue:0)}</tr></table>`);
@@ -1328,9 +1371,12 @@ function buildNotes() {
   add('TAXEXP2','Profit before taxation', `
     <p class="text-[12px]">Profit before taxation is arrived at after charging / (crediting):</p>
     <table class="fs-doc">${noteHead}
-      ${audFee.cy?`<tr><td>Auditors' remuneration</td>${two(audFee.cy, audFee.py)}</tr>`:'<tr><td>Auditors\' remuneration [insert]</td><td class="num">[ ]</td></tr>'}
+      ${audFee.cy?`<tr><td>Auditors' remuneration</td>${two(audFee.cy, audFee.py)}</tr>`
+        : num(N.auditFee)?`<tr><td>Auditors' remuneration</td>${two(num(N.auditFee), 0)}</tr>`
+        : `<tr><td>Auditors' remuneration ${nv('','[insert — should also be accrued]')}</td><td class="num"></td></tr>`}
       <tr><td>Depreciation of property, plant and equipment</td>${two(m.nat.DEPR, p?p.nat.DEPR:0)}</tr>
-      ${dirRem.cy?`<tr><td>Directors' remuneration</td>${two(dirRem.cy, dirRem.py)}</tr>`:''}
+      ${dirRem.cy?`<tr><td>Directors' remuneration</td>${two(dirRem.cy, dirRem.py)}</tr>`
+        : num(N.dirRem)?`<tr><td>Directors' remuneration</td>${two(num(N.dirRem), 0)}</tr>`:''}
       ${rentExp.cy?`<tr><td>Rental of premises</td>${two(rentExp.cy, rentExp.py)}</tr>`:''}
       ${m.fin?`<tr><td>Interest expense</td>${two(m.fin, p?p.fin:0)}</tr>`:''}
       ${m.othinc?`<tr><td>Other income</td>${two(-m.othinc, p?-p.othinc:0)}</tr>`:''}
@@ -1354,9 +1400,10 @@ function buildNotes() {
       <tr class="fs-total"><td>Total</td>${two(staff.cy+epf.cy+socso.cy, staff.py+epf.py+socso.py)}</tr></table>
     <p class="text-[12px] text-mut">The Company had ${esc(S.setup.employees)||'[ ]'} employees at the end of the financial year.</p>`);
   // related party transactions
-  if (m.nat.DIRADV || m.nat.DIROWE || m.nat.RPTREC || m.nat.RPTPAY || dirRem.cy)
+  const kmp = dirRem.cy || num(N.dirRem);
+  if (m.nat.DIRADV || m.nat.DIROWE || m.nat.RPTREC || m.nat.RPTPAY || kmp)
     add('RPTX','Related party disclosures', `
-      <p class="text-[12px]">The Company's related parties include its directors and companies in which the directors have substantial interests. Significant related party balances are disclosed in the respective notes. ${dirRem.cy?`Key management personnel compensation (directors' remuneration) for the year was ${fmtRM(dirRem.cy)}.`:''}</p>`);
+      <p class="text-[12px]">The Company's related parties include its directors and companies in which the directors have substantial interests. Significant related party balances are disclosed in the respective notes. ${kmp?`Key management personnel compensation (directors' remuneration) for the year was ${fmtRM(kmp)}.`:''}</p>`);
   // financial instruments + events
   add('FIRISK','Financial instruments and risk management', `
     <p class="text-[12px]">The Company's financial instruments comprise receivables, payables, borrowings, deposits and cash. The main risks are credit risk (managed through credit evaluation and monitoring of receivable ageing), liquidity risk (managed through cash-flow planning and available banking facilities) and interest-rate risk on floating-rate borrowings. The directors review these exposures on an ongoing basis.</p>`);
@@ -1379,7 +1426,7 @@ function buildNotes() {
     <strong>Employee benefits</strong> — short-term benefits and defined contributions to EPF expensed as incurred.
     <strong>Cash and cash equivalents</strong> — cash, bank balances and deposits with maturities of three months or less, net of bank overdrafts.</p>
     ${blocks.join('')}`;
-  return { map, html };
+  return { map, html, ph };
 }
 function packStatementRows(map) {
   const m = model(), p = hasPY() ? model(true) : null;
@@ -1439,10 +1486,18 @@ function packStatementRows(map) {
 }
 function renderPack() {
   const el = $('pack-render');
-  if (!S.tb.length) { el.innerHTML = '<div class="text-mut text-[13px]">Import a trial balance (step 2) to generate the full statutory pack.</div>'; return; }
+  // hydrate the note-details inputs
+  const NMAP = { 'n-termsGiven':'termsGiven','n-termsRecd':'termsRecd','n-deprRates':'deprRates','n-fdRate':'fdRate',
+    'n-borrSec':'borrSec','n-borrRate':'borrRate','n-hpCurrent':'hpCurrent','n-auditFee':'auditFee','n-dirRem':'dirRem' };
+  for (const [id,k] of Object.entries(NMAP)) { const inp = $(id); if (inp && document.activeElement !== inp) inp.value = (S.notes||{})[k] || ''; }
+  if (!S.tb.length) { el.innerHTML = '<div class="text-mut text-[13px]">Import a trial balance (step 2) to generate the full statutory pack.</div>';
+    $('ph-count').textContent = '—'; $('ph-count').className = 'pill pill-mut'; return; }
   const { name, reg, fye } = repCtx();
   const m = model(), p = hasPY() ? model(true) : null;
   const notes = buildNotes();
+  const phEl = $('ph-count');
+  if (notes.ph === 0) { phEl.className = 'pill pill-ok'; phEl.textContent = 'All placeholders resolved'; }
+  else { phEl.className = 'pill pill-warn'; phEl.textContent = `${notes.ph} placeholder(s) still bracketed`; }
   const st = packStatementRows(notes.map);
   const hdr = packHeader(name, reg);
   const contents = [
@@ -1561,6 +1616,278 @@ function ajeDelete(id) {
   toast('Journal removed' + (a && a.findingId ? ' — finding reopened' : ''));
 }
 
+/* ---------- clients & engagements ---------- */
+function clientStats(c) {
+  const keep = S; S = c;                       // evaluate in the client's context
+  let st = { rev:0, findings:0, blockers:0, pct:0, opinion:'—' };
+  try {
+    if (c.tb.length) {
+      const ev = evaluate(); const m = ev.mat.m;
+      st = { rev:m.revenue, findings:ev.open.length,
+        blockers:ev.open.filter(f=>['blocker','high'].includes(f.sev)).length,
+        pct: Math.round([!!(c.setup.name && c.setup.fye), Math.abs(tbTotals().diff)<=0.5,
+          ev.open.filter(f=>['blocker','high'].includes(f.sev)).length===0,
+          Math.abs(m.balGap)<=1, !!(c.sign.partner && c.sign.firm)].filter(Boolean).length / 5 * 100),
+        opinion: OPINION_LABEL[ev.opinion] };
+    } else st.pct = c.setup.name ? 20 : 0;
+  } catch(e) {}
+  S = keep;
+  return st;
+}
+function renderClients() {
+  $('clients-grid').innerHTML = DB.clients.map(c => {
+    const st = clientStats(c);
+    const active = c.id === DB.activeId;
+    return `
+    <div class="card card-pad cursor-pointer hover:border-indigo transition-colors ${active?'!border-indigo ring-1 ring-indigo':''}"
+         onclick="switchClient('${c.id}'); show('dashboard'); toast('Switched to ' + (S.setup.name || 'new engagement'))">
+      <div class="flex items-start justify-between gap-2 mb-2">
+        <div class="min-w-0">
+          <div class="font-bold text-[14.5px] truncate">${esc(c.setup.name) || 'Untitled engagement'}</div>
+          <div class="text-[12px] text-mut truncate">${c.setup.regno ? esc(c.setup.regno) + ' · ' : ''}${c.setup.fye ? 'FYE ' + dMY(c.setup.fye) : 'FYE not set'}</div>
+        </div>
+        ${active ? '<span class="pill pill-info">Active</span>' : ''}
+      </div>
+      <div class="flex items-center gap-4 text-[12px] text-mut mb-3">
+        <span>Revenue <span class="mono font-semibold text-ink">${st.rev ? fmtRM(st.rev) : '–'}</span></span>
+        <span>Findings <span class="mono font-semibold ${st.blockers ? 'text-risk':'text-ink'}">${st.findings}</span></span>
+      </div>
+      <div class="h-1.5 rounded-full bg-paper overflow-hidden mb-2">
+        <div class="h-full rounded-full bg-indigo" style="width:${st.pct}%"></div>
+      </div>
+      <div class="flex items-center justify-between">
+        <span class="text-[11px] text-mut">${st.pct}% through the file · ${st.opinion}</span>
+        <button class="btn btn-ghost !px-2 !py-1" onclick="event.stopPropagation(); deleteClient('${c.id}')" aria-label="Delete engagement">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#B91C1C" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/></svg>
+        </button>
+      </div>
+    </div>`;
+  }).join('') || '<div class="text-mut text-[13px]">No engagements yet.</div>';
+}
+function newClientPrompt() {
+  const name = prompt('Client / company name for the new engagement:');
+  if (name === null) return;
+  newClient(name.trim());
+  renderClients(); updateTop();
+  toast('Engagement created — set it up');
+  show('setup');
+}
+function deleteClient(id) {
+  const c = DB.clients.find(x => x.id === id);
+  if (!confirm(`Delete the engagement "${c?.setup.name || 'Untitled'}" and all its attached evidence? This cannot be undone.`)) return;
+  DB.clients = DB.clients.filter(x => x.id !== id);
+  idbDeleteClient(id).catch(()=>{});
+  if (!DB.clients.length) newClient('');
+  if (DB.activeId === id) { DB.activeId = DB.clients[0].id; S = activeClient(); }
+  saveState(); renderClients(); updateTop();
+}
+
+/* ---------- evidence vault (IndexedDB) ---------- */
+const DOCCATS = ['Bank statements & confirmations','Sales & receivables evidence','Purchases & payables evidence',
+  'Fixed asset register & invoices','Inventory count sheets','Payroll · EPF · SOCSO','SSM & statutory records',
+  'Tax — CP204 / Form C / assessments','Agreements & facility letters','Prior-year FS & working papers','Others'];
+let idb = null;
+function idbOpen() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('mr-auditor-files', 1);
+    r.onupgradeneeded = e => { const st = e.target.result.createObjectStore('files', { keyPath:'id' });
+      st.createIndex('client','clientId',{unique:false}); };
+    r.onsuccess = () => { idb = r.result; res(); };
+    r.onerror = () => rej(r.error);
+  });
+}
+const idbTx = (mode, fn) => new Promise((res, rej) => {
+  if (!idb) return rej(new Error('no idb'));
+  const tx = idb.transaction('files', mode); const out = fn(tx.objectStore('files'));
+  tx.oncomplete = () => res(out && out._val !== undefined ? out._val : undefined);
+  tx.onerror = () => rej(tx.error);
+});
+const idbPut = rec => idbTx('readwrite', st => st.put(rec));
+const idbDel = id => idbTx('readwrite', st => st.delete(id));
+function idbList(clientId) {
+  return new Promise((res, rej) => {
+    if (!idb) return res([]);
+    const out = [];
+    const c = idb.transaction('files').objectStore('files').index('client').openCursor(IDBKeyRange.only(clientId));
+    c.onsuccess = e => { const cur = e.target.result; if (cur) { out.push(cur.value); cur.continue(); } else res(out); };
+    c.onerror = () => rej(c.error);
+  });
+}
+async function idbDeleteClient(clientId) {
+  const files = await idbList(clientId);
+  for (const f of files) await idbDel(f.id);
+}
+async function vaultCount(){ try { return (await idbList(S.id)).length; } catch(e){ return 0; } }
+async function vaultUpload(input) {
+  const cat = $('vault-cat').value || 'Others';
+  const files = [...input.files]; input.value = '';
+  if (!files.length) return;
+  for (const f of files) {
+    await idbPut({ id:nid(), clientId:S.id, cat, name:f.name, type:f.type, size:f.size,
+      uploadedAt: Date.now(), blob:f });
+  }
+  toast(`${files.length} file(s) filed under ${cat}`);
+  renderVault(); updateTop();
+}
+async function vaultView(id) {
+  const files = await idbList(S.id); const f = files.find(x => x.id === id);
+  if (!f) return;
+  const url = URL.createObjectURL(f.blob);
+  window.open(url, '_blank');
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+async function vaultDownload(id) {
+  const files = await idbList(S.id); const f = files.find(x => x.id === id);
+  if (!f) return;
+  const url = URL.createObjectURL(f.blob);
+  const a = document.createElement('a'); a.href = url; a.download = f.name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+async function vaultDelete(id) {
+  if (!confirm('Remove this file from the vault?')) return;
+  await idbDel(id); renderVault(); updateTop();
+}
+const fmtSize = b => b > 1048576 ? (b/1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b/1024)) + ' KB';
+async function renderVault() {
+  $('vault-cat').innerHTML = DOCCATS.map(c => `<option>${c}</option>`).join('');
+  let files = [];
+  try { files = await idbList(S.id); } catch(e) {}
+  files.sort((a,b) => b.uploadedAt - a.uploadedAt);
+  $('vault-grid').innerHTML = DOCCATS.map(cat => {
+    const fs = files.filter(f => f.cat === cat);
+    return `
+    <div class="card card-pad">
+      <div class="flex items-center justify-between mb-2">
+        <div class="font-semibold text-[13.5px]">${cat}</div>
+        <span class="pill ${fs.length ? 'pill-ok':'pill-mut'}">${fs.length ? fs.length + ' filed' : 'outstanding'}</span>
+      </div>
+      ${fs.map(f => `
+        <div class="flex items-center gap-2 py-1.5 border-b border-line/60 last:border-0">
+          <svg viewBox="0 0 24 24" width="15" height="15" class="flex-none" fill="none" stroke="#3B49C9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
+          <button class="text-[12.5px] font-medium text-indigo hover:underline truncate flex-1 text-left" onclick="vaultView('${f.id}')" title="View ${esc(f.name)}">${esc(f.name)}</button>
+          <span class="text-[11px] text-mut mono flex-none">${fmtSize(f.size)}</span>
+          <button class="btn btn-ghost !px-1.5 !py-1 flex-none" onclick="vaultDownload('${f.id}')" aria-label="Download">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+          </button>
+          <button class="btn btn-ghost !px-1.5 !py-1 flex-none" onclick="vaultDelete('${f.id}')" aria-label="Delete">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#B91C1C" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>`).join('') || '<div class="text-[12px] text-mut">Nothing filed yet.</div>'}
+    </div>`;
+  }).join('');
+}
+
+/* ---------- Ask Mr Auditor — account intelligence ---------- */
+/* Per-category auditor knowledge: assertions at risk, standard procedures, the trap. */
+const KB = {
+  REV:{a:'Occurrence · Completeness · Cut-off',t:'The double risk: overstated to impress the bank, or suppressed to dodge tax. ISA 240 presumes revenue fraud risk.',p:['Reconcile recorded sales to bank-in credits and to SST-02 / MyInvois data','Cut-off: test 2 weeks either side of year end against delivery orders','Margin-by-month analytics — flat margins with lumpy revenue is a red flag']},
+  COS:{a:'Occurrence · Cut-off · Classification',t:'Purchases cut-off errors distort margin; personal purchases hide in here.',p:['Match year-end GRNs to supplier invoices (unrecorded liabilities search)','Vouch large/unusual suppliers — related-party purchases must surface','Test opening/closing stock inclusion in the cost build-up']},
+  OTHINC:{a:'Occurrence · Classification',t:'Grants, disposals and rental often mis-posted; gains may be capital (not revenue).',p:['Vouch to agreements/receipts','Confirm tax treatment — capital gains vs income']},
+  ADMIN:{a:'Occurrence · Classification · Accuracy',t:'The dumping ground. Directors\' personal expenses live here — s.39 ITA disallowables too.',p:['Scan the ledger for round sums, weekend dates, personal-sounding vendors','Extract entertainment, fines, donations for the tax computation','Vouch items above the testing threshold to invoices']},
+  SELL:{a:'Occurrence · Accuracy',t:'Commissions may indicate undisclosed related parties or kickbacks.',p:['Vouch commission agreements and recipients','Match freight to sales activity']},
+  DEPR:{a:'Accuracy · Valuation',t:'Rates must match policy and useful lives; a sudden change needs justification.',p:['Recompute from the fixed asset register','Compare charge/cost ratio year on year']},
+  FIN:{a:'Completeness · Accuracy',t:'Interest proves debt: unrecorded facilities show up as unexplained interest.',p:['Recompute from facility letters and HP schedules','Agree to bank confirmations']},
+  TAXEXP:{a:'Accuracy · Valuation',t:'Should tie to the tax computation, not a plug.',p:['Recompute using the Tax screen','Agree prior-year tax to the notice of assessment']},
+  PPE:{a:'Existence · Valuation · Rights',t:'Ghost assets and missing registers are endemic in SMEs.',p:['Sight major assets; agree ownership documents (vehicles: registration cards)','Rebuild/verify the fixed asset register; test additions to invoices','Check capitalisation vs repairs policy']},
+  ACCDEP:{a:'Accuracy · Valuation',t:'Depreciation past useful life or on disposed assets is common.',p:['Recompute; investigate NBV near zero but assets still in use (useful-life review)']},
+  INTANG:{a:'Existence · Valuation',t:'Capitalised development costs rarely meet the recognition criteria in an SME.',p:['Challenge recognition basis','Test amortisation and impairment indicators']},
+  INVEST:{a:'Existence · Valuation · Rights',t:'Related-company shares may be impaired if the investee is loss-making.',p:['Confirm holdings (share certs / broker statements)','Review investee FS for impairment']},
+  INV:{a:'Existence · Valuation (NRV) · Cut-off',t:'The classic profit lever — closing stock up, profit up. ISA 501 demands count attendance when material.',p:['Attend or roll back the physical count','Test NRV: post-year-end selling prices vs cost on slow movers','Cut-off: last GRN/DO numbers either side of year end']},
+  TR:{a:'Existence · Valuation (recoverability)',t:'Stale receivables mean impairment — or sales that never happened.',p:['Circularise major balances (ISA 505); test post-year-end receipts','Age the listing; challenge >90-day balances with no receipts','Look for credit notes issued just after year end (cut-off games)']},
+  OR:{a:'Existence · Valuation',t:'Long-outstanding deposits/advances may be irrecoverable or disguised lending.',p:['Vouch deposits to agreements','Confirm recoverability of staff/other advances']},
+  DIRADV:{a:'Rights · Valuation · Legality',t:'s.224/225 CA 2016 restricts loans to directors; LHDN deems s.140B interest. The most litigated SME balance.',p:['Signed director confirmation + repayment plan','Check board approval/shareholder ratification','Add deemed interest to the tax computation; assess impairment']},
+  RPTREC:{a:'Existence · Valuation · Disclosure',t:'Support depends on the related company\'s ability to pay — check its FS.',p:['Confirm balance with the related party','Review counterparty solvency; disclose terms (MPERS s.33)']},
+  FD:{a:'Existence · Rights',t:'FDs are often pledged as security — restricted cash must be disclosed.',p:['Bank confirmation incl. liens/pledges','Recompute interest income']},
+  CASH:{a:'Existence · Completeness',t:'Bank reconciliations are the single most revealing SME working paper.',p:['Bank confirmations for ALL accounts (dormant ones hide surprises)','Test reconciling items: stale cheques, unexplained deposits-in-transit','Credit balances → reclassify to overdraft']},
+  TP:{a:'Completeness · Cut-off',t:'Understatement risk: search for unrecorded liabilities, not just what\'s booked.',p:['Match post-year-end payments to the year they belong','Reconcile major supplier statements','Review debit balances in payables (misposted or recoverable?)']},
+  OP:{a:'Completeness · Accuracy',t:'Missing accruals (bonuses, utilities, audit fee) understate liabilities.',p:['Review recurring expenses for missing year-end accruals','Agree EPF/SOCSO/PCB payables to statutory forms']},
+  DIROWE:{a:'Completeness · Disclosure',t:'Usually the SME\'s lifeline financing — undocumented and repayable on demand (a going-concern lever).',p:['Director confirmation of balance and terms','Consider subordination letter if going concern depends on it']},
+  RPTPAY:{a:'Completeness · Disclosure',t:'Terms and nature must be disclosed under MPERS s.33.',p:['Confirm with counterparty; check netting is not masking exposures']},
+  OD:{a:'Completeness · Rights',t:'Check covenant compliance — breach can make long-term debt repayable now.',p:['Bank confirmation; review facility covenants']},
+  BORR:{a:'Completeness · Classification · Disclosure',t:'Current/non-current split and covenant breaches change the whole liquidity picture.',p:['Bank confirmation + facility letters','Split maturities per repayment schedule','Check security disclosures match the charge register (SSM)']},
+  HP:{a:'Completeness · Classification',t:'HP interest must unwind properly; the current portion is often missed.',p:['Recompute from HP schedules; split within/after 12 months']},
+  TAXPAY:{a:'Completeness · Accuracy',t:'Should reconcile to the tax computation and CP204 payments.',p:['Reconcile: opening + charge − payments = closing','Check for unprovided prior-year assessments']},
+  DEFTAX:{a:'Accuracy · Valuation',t:'Usually PPE timing differences; recognise only what is probable.',p:['Recompute from capital allowance vs NBV differences']},
+  SC:{a:'Existence · Rights',t:'Must agree to SSM records — share issues need lodgements.',p:['Agree to s.78/s.51 SSM filings and the register of members']},
+  RE:{a:'Accuracy',t:'Opening balance must tie to last year\'s closing — a mismatch means unposted prior-year adjustments.',p:['Agree opening RE to the signed prior-year FS']},
+  DIV:{a:'Legality · Authorisation',t:'s.131/132 CA 2016: solvency test + available profits, or directors are personally liable.',p:['Sight the directors\' solvency resolution','Confirm distributable reserves at declaration date']},
+  SUSP:{a:'All assertions',t:'A suspense balance is unaudited by definition — clear it or qualify.',p:['Obtain the breakdown; reclassify every item','Aggregate any unresolved remainder as a misstatement']},
+};
+function accountIntel(row) {
+  const mat = materiality(); const m = mat.m;
+  const cy = (num(row.dr) - num(row.cr)) * CAT[row.cat].side;
+  const py = num(row.py);
+  const varPct = py ? (cy - py) / Math.abs(py) * 100 : null;
+  const matPct = mat.overall ? Math.abs(cy) / mat.overall * 100 : 0;
+  const kb = KB[row.cat] || {a:'—', t:'No specific guidance — classify this account correctly first.', p:['Review classification']};
+  const findingCats = { 'dir-adv':['DIRADV'], 'no-depr':['PPE','ACCDEP','DEPR'], 'accdep-exceeds':['PPE','ACCDEP'],
+    'neg-cash':['CASH','OD'], 'rec-days':['TR','REV'], 'inv-days':['INV','COS'], 'neg-gp':['REV','COS'], 'gp-swing':['REV','COS'],
+    'rpt-disc':['RPTREC','RPTPAY','DIROWE','DIRADV'], 'no-interest':['BORR','HP','OD','FIN'], 'interest-no-loan':['FIN'],
+    'fd-no-int':['FD'], 'no-epf':['ADMIN','OP'], 'suspense':['SUSP'], 'illegal-div':['DIV','RE'] };
+  const related = S.tb.length ? evaluate().open.filter(f => (findingCats[f.id]||[]).includes(row.cat)) : [];
+  return { row, cy, py, varPct, matPct, kb, related, mat };
+}
+function intelCardHTML(row) {
+  const it = accountIntel(row);
+  const sig = it.matPct >= 100 ? ['pill-risk','Material — full scope'] : it.matPct >= 50 ? ['pill-warn','Approaching materiality'] :
+              it.matPct >= 10 ? ['pill-info','In scope — sample'] : ['pill-mut','Low significance'];
+  return `
+  <div class="border border-line rounded-xl p-3.5 bg-white">
+    <div class="flex items-center gap-2 flex-wrap mb-1">
+      <span class="font-bold text-[14px]">${esc(row.name)}</span>
+      <span class="pill pill-mut">${CAT[row.cat].label}</span>
+      <span class="pill ${sig[0]}">${sig[1]}</span>
+    </div>
+    <div class="flex items-end gap-5 my-2">
+      <div><div class="kpi-lbl">This year</div><div class="mono font-semibold text-[17px]">${fmtRM(it.cy)}</div></div>
+      <div><div class="kpi-lbl">Prior year</div><div class="mono text-[15px] text-mut">${it.py ? fmtRM(it.py) : '–'}</div></div>
+      ${it.varPct !== null ? `<div><div class="kpi-lbl">Movement</div><div class="mono font-semibold text-[15px] ${Math.abs(it.varPct)>25?'text-warn':''}">${it.varPct>0?'+':''}${it.varPct.toFixed(1)}%</div></div>` : ''}
+      <div><div class="kpi-lbl">vs materiality</div><div class="mono text-[15px]">${it.matPct.toFixed(0)}%</div></div>
+    </div>
+    <div class="text-[12px]"><span class="font-semibold text-indigo">Assertions at risk:</span> ${it.kb.a}</div>
+    <p class="text-[12.5px] text-mut mt-1">${it.kb.t}</p>
+    <div class="text-[12px] font-semibold mt-2 mb-1">Mr Auditor's procedures:</div>
+    <ul class="text-[12.5px] space-y-0.5 list-disc pl-5">${it.kb.p.map(p=>`<li>${p}</li>`).join('')}</ul>
+    ${it.related.length ? `<div class="mt-2 pt-2 border-t border-line">
+      ${it.related.map(f=>`<div class="flex items-center gap-2 text-[12.5px]"><span class="pill ${f.sev==='high'||f.sev==='blocker'?'pill-risk':f.sev==='medium'?'pill-warn':'pill-info'}">${f.sev}</span> ${f.title}</div>`).join('')}
+      <button class="btn btn-ghost !py-1 !text-[12px] mt-1.5" onclick="askClose(); show('audit')">Open in Audit Engine</button></div>` : ''}
+  </div>`;
+}
+const ASK_TOPICS = {
+  materiality: () => { if (!S.tb.length) return 'Import a trial balance first.'; const mt = materiality();
+    return `Overall materiality <b class="mono">${fmtRM(mt.overall)}</b> (${mt.label}) · performance materiality <b class="mono">${fmtRM(mt.pm)}</b> · clearly trivial <b class="mono">${fmtRM(mt.trivial)}</b>. Benchmarks available: revenue ${fmtRM(Math.round(mt.benches.revenue.base*.01))}, PBT ${fmtRM(Math.round(mt.benches.pbt.base*.05))}, assets ${fmtRM(Math.round(mt.benches.assets.base*.015))}.`; },
+  deadline: () => deadlines().map(d => `${d.label}: <b>${dMY(d.date)}</b> (${d.days<0?Math.abs(d.days)+'d overdue':d.days+'d left'})`).join('<br>') || 'Set the FYE first.',
+  opinion: () => { if (!S.tb.length) return 'Import a trial balance first.'; const ev = evaluate();
+    return `Mr Auditor recommends: <b>${OPINION_LABEL[ev.opinion]}</b>${ev.gc?' + Material Uncertainty (Going Concern)':''}.<br>${ev.why}`; },
+  exemption: () => { const ex = exemptionAssess(); return ex ? ex.summary + (ex.qualifies!==undefined ? (ex.qualifies?' — may qualify.':' — audit required.') : '') : 'Set the FYE first.'; },
+  tax: () => { if (!S.tb.length) return 'Import a trial balance first.'; const sme = smeEligible();
+    return `${sme.ok ? 'SME rates apply: 15% / 17% / 24% tiers.' : 'Flat 24% — SME conditions not met.'} Open the Tax screen for the full computation.`; },
+  'going concern': () => { if (!S.tb.length) return 'Import a trial balance first.'; const m = model();
+    return `Equity ${fmtRM(m.equity)} · net current ${m.netCurrent>=0?'assets':'liabilities'} ${fmtRM(Math.abs(m.netCurrent))}. ${evaluate().gc ? 'Indicators present — obtain forecasts + support letters, consider MUGC.' : 'No primary indicators from the numbers.'}`; }
+};
+function askOpen() { $('ask-overlay').classList.remove('hidden'); $('ask-input').value=''; askSearch(); $('ask-input').focus(); }
+function askClose() { $('ask-overlay').classList.add('hidden'); }
+function askAccount(rowId) { askOpen(); const r = S.tb.find(x => x.id === rowId);
+  if (r) { $('ask-input').value = r.name; askSearch(); } }
+function askSearch() {
+  const q = $('ask-input').value.trim().toLowerCase();
+  const box = $('ask-results');
+  if (!q) {
+    box.innerHTML = `<div class="text-[12.5px] text-mut px-1 py-2">Try an account name (<b>receivables</b>, <b>director</b>, <b>stock</b>), a category, or a topic: ${Object.keys(ASK_TOPICS).map(t=>`<button class="pill pill-info !cursor-pointer mr-1" onclick="$('ask-input').value='${t}';askSearch()">${t}</button>`).join('')}</div>
+    ${S.tb.length ? S.tb.slice(0,4).map(intelCardHTML).join('') : ''}`;
+    return;
+  }
+  for (const [topic, fn] of Object.entries(ASK_TOPICS)) {
+    if (topic.startsWith(q) || q.includes(topic)) {
+      box.innerHTML = `<div class="border border-line rounded-xl p-3.5 bg-indigosoft text-[13px] leading-relaxed">${fn()}</div>`;
+      return;
+    }
+  }
+  const hits = S.tb.filter(r => r.name.toLowerCase().includes(q) || CAT[r.cat].label.toLowerCase().includes(q)).slice(0,6);
+  box.innerHTML = hits.length ? hits.map(intelCardHTML).join('')
+    : `<div class="text-[13px] text-mut px-1 py-3">No account matches “${esc(q)}”. Topics: ${Object.keys(ASK_TOPICS).join(', ')}.</div>`;
+}
+
 /* ---------- reference ---------- */
 function renderRef() {
   const card = (title, body) => `<div class="card card-pad"><h2 class="font-bold text-[15px] mb-2">${title}</h2><div class="text-[13px] leading-relaxed space-y-2">${body}</div></div>`;
@@ -1611,20 +1938,42 @@ function printSection(id) {
 
 /* ---------- persistence ---------- */
 function saveState(announce) {
-  try { localStorage.setItem('mr-auditor-v1', JSON.stringify(S)); } catch(e) {}
+  try { localStorage.setItem('mr-auditor-v2', JSON.stringify(DB)); } catch(e) {}
   if (announce) toast('Engagement saved locally');
 }
+function hydrate(d) {
+  const c = Object.assign(BLANK(), d);
+  c.setup = Object.assign(BLANK().setup, d.setup); c.tax = Object.assign(BLANK().tax, d.tax);
+  c.sign = Object.assign(BLANK().sign, d.sign); c.audit = Object.assign(BLANK().audit, d.audit);
+  c.notes = Object.assign({}, d.notes);
+  return c;
+}
 function loadState() {
-  try { const raw = localStorage.getItem('mr-auditor-v1');
-    if (raw) { const d = JSON.parse(raw); S = Object.assign(BLANK(), d);
-      S.setup = Object.assign(BLANK().setup, d.setup); S.tax = Object.assign(BLANK().tax, d.tax);
-      S.sign = Object.assign(BLANK().sign, d.sign); S.audit = Object.assign(BLANK().audit, d.audit); }
+  try {
+    const v2 = localStorage.getItem('mr-auditor-v2');
+    if (v2) {
+      const d = JSON.parse(v2);
+      DB = { ver:2, activeId:d.activeId, clients:(d.clients||[]).map(hydrate) };
+    } else {
+      const v1 = localStorage.getItem('mr-auditor-v1');   // migrate single-engagement era
+      if (v1) { const c = hydrate(JSON.parse(v1)); c.id = nid(); c.created = Date.now();
+        DB.clients = [c]; DB.activeId = c.id; localStorage.removeItem('mr-auditor-v1'); saveState(); }
+    }
   } catch(e) {}
+  if (!DB.clients.length) newClient('');
+  if (!activeClient()) DB.activeId = DB.clients[0].id;
+  S = activeClient();
 }
 
 /* ---------- demo ---------- */
 function loadDemo() {
-  S = BLANK();
+  // demo lives in its own engagement — never wipes real clients
+  const existing = DB.clients.find(c => c.setup.name === 'Delta Precision Engineering Sdn. Bhd.');
+  if (existing) DB.clients = DB.clients.filter(c => c !== existing);
+  // drop the initial empty shell if untouched
+  DB.clients = DB.clients.filter(c => c.setup.name || c.tb.length);
+  const c = Object.assign(BLANK(), { id:nid(), created:Date.now() });
+  DB.clients.push(c); DB.activeId = c.id; S = c;
   const today = new Date();
   const fyeYear = today.getMonth() >= 6 ? today.getFullYear() - 1 : today.getFullYear() - 1;
   S.setup = { name:'Delta Precision Engineering Sdn. Bhd.', regno:'201801034567 (1293456-K)',
@@ -1691,5 +2040,10 @@ document.querySelectorAll('#sidenav .navlink').forEach(n => n.addEventListener('
 $('mobile-nav').innerHTML = document.querySelector('#sidenav').outerHTML.replace('id="sidenav"','id="sidenav-m"') ;
 document.querySelectorAll('#mobile-nav .navlink').forEach(n => n.addEventListener('click', () => show(n.dataset.scr)));
 $('mobile-nav').classList.add('p-3','pt-6','overflow-y-auto');
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); askOpen(); }
+  if (e.key === 'Escape') askClose();
+});
 loadState();
+idbOpen().then(() => updateTop()).catch(() => {});
 render('dashboard');
