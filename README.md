@@ -29,27 +29,35 @@ python -m http.server 8000   # then http://localhost:8000/mr-auditor/
 | 9 Toolkit | Capital allowance schedule, ISA 505 confirmation letters, bank-in reconciliation, lead schedules, roll-forward, JSON export/import |
 | Ask Mr Auditor | Ctrl+K — instant account intel: balances, assertions at risk, procedures, findings |
 
-## Storage today / Supabase tomorrow
+## Backend (Supabase — live)
 
-Today everything is browser-local: engagements in `localStorage` (`mr-auditor-v2`), evidence
-files in IndexedDB (`mr-auditor-files`). **Do not store real client documents until the
-Supabase backend is wired.**
+The app is wired to Supabase project `ycsctxcgdssifzijgavs`:
 
-To prepare Supabase:
+- **Auth** — email/password (Supabase Auth); the sign-in gate is the app's front door.
+- **Engagements** — each client file lives as jsonb in the `engagements` table (schema in
+  `supabase-schema.sql`), synced on every save with a per-client debounce.
+- **Evidence Vault** — files upload to the private `evidence` Storage bucket with metadata in
+  `evidence_files`; view/download via short-lived signed URLs. RLS keys everything off
+  `auth.uid()` so each auditor only sees their own clients.
 
-1. Create a project (Singapore region), then run `supabase-schema.sql` in the SQL editor —
-   it creates `engagements` (whole engagement as `jsonb`, matching the app's Toolkit → Export
-   JSON format exactly), `evidence_files`, a private `evidence` storage bucket, and RLS so each
-   auditor sees only their own clients.
-2. Enable email auth (the firm's staff log in; RLS keys off `auth.uid()`).
-3. Wiring the app: replace `saveState/loadState` with upserts to `engagements.data`, and the
-   vault's IndexedDB calls with Storage uploads + signed URLs. The abstraction points are all in
-   `app.js` (`saveState`, `loadState`, `idbPut`, `idbList`, `idbDel`).
+## Ask Mr Auditor AI (Edge Function)
 
-Migration path for existing data: Toolkit → Export JSON per engagement → insert into
-`engagements.data`.
+`supabase/functions/ask-mr-auditor/index.ts` proxies questions to the Anthropic API
+(`claude-opus-4-8` via the official TypeScript SDK) with a Malaysian-audit system prompt.
+The web app sends the question plus a compact JSON snapshot of the active engagement
+(figures, materiality, findings, TB, deadlines), so answers are grounded in the actual file.
+The API key stays server-side; the function requires a signed-in user's JWT (verify_jwt on).
+
+To deploy or update it:
+
+1. Supabase dashboard → **Edge Functions** → deploy a function named `ask-mr-auditor` with
+   the contents of `supabase/functions/ask-mr-auditor/index.ts`
+   (or `supabase functions deploy ask-mr-auditor` with the CLI).
+2. **Edge Functions → Secrets** → add `ANTHROPIC_API_KEY` = your Anthropic API key.
+
+Until both steps are done, the palette's instant answers still work; the AI button shows a
+friendly "not deployed yet" message.
 
 ## Deploy
 
-Static — deploys with the existing Render static site (`render.yaml` at repo root). Live path:
-`/mr-auditor/`.
+Static site on Render (auto-deploys from `main`): https://mrauditor.onrender.com

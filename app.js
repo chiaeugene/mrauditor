@@ -16,6 +16,7 @@
 const SUPABASE_URL = 'https://ycsctxcgdssifzijgavs.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inljc2N0eGNnZHNzaWZ6aWpnYXZzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM0MjA5NzYsImV4cCI6MjA5ODk5Njk3Nn0.L4pz_nPE1UFyCg9V4MOIWvgEAt2zShZvftZ8JuKd4yM';
 let sb = null, authUser = null;
+let _vaultN = 0;   // cached vault file count for the active engagement (refreshed in updateTop)
 
 /* ---------------- state ---------------- */
 const BLANK = () => ({
@@ -575,7 +576,8 @@ function updateTop() {
   $('top-sub').textContent = S.setup.name
     ? `${S.setup.name} · FYE ${dMY(S.setup.fye)} · ${S.setup.framework}` : 'New engagement — set up the client';
   document.querySelectorAll('#nav-client-count').forEach(el => el.textContent = DB.clients.length);
-  vaultCount().then(n => document.querySelectorAll('#nav-vault-count').forEach(el => el.textContent = n)).catch(()=>{});
+  vaultCount().then(n => { _vaultN = n;
+    document.querySelectorAll('#nav-vault-count').forEach(el => el.textContent = n); }).catch(()=>{});
   const st = $('top-status');
   if (!S.tb.length) { st.className='pill pill-mut'; st.textContent='Not started'; return; }
   const ev = evaluate();
@@ -608,31 +610,35 @@ function renderDashboard() {
   ].join('');
   animateKpis('dash-kpis');
 
-  // pipeline
+  // pipeline — mirrors how a real engagement runs: setup → evidence → numbers → audit → outputs
   const t = tbTotals();
   const steps = [
     { n:1, lbl:'Engagement set up', done: !!(S.setup.name && S.setup.fye), scr:'setup',
       sub: S.setup.name ? `${S.setup.name} · ${S.setup.framework}` : 'company particulars, framework, exemption check' },
-    { n:2, lbl:'Trial balance imported & balanced', done: has && Math.abs(t.diff)<=0.5, scr:'tb',
+    { n:2, lbl:'Evidence collected in the vault', done: _vaultN > 0, scr:'vault',
+      sub: _vaultN > 0 ? `${_vaultN} file(s) filed` : 'bank statements, prior-year FS, SSM records — the documents the audit rests on' },
+    { n:3, lbl:'Trial balance imported & balanced', done: has && Math.abs(t.diff)<=0.5, scr:'tb',
       sub: has ? `${S.tb.length} accounts · ${Math.abs(t.diff)<=0.5?'balanced':'OUT OF BALANCE ' + fmtRM(t.diff)}` : 'paste from Excel / accounting system' },
-    { n:3, lbl:'Audit engine run — findings cleared', done: has && ev.open.filter(f=>['blocker','high'].includes(f.sev)).length===0, scr:'audit',
+    { n:4, lbl:'Audit engine run — findings cleared', done: has && ev.open.filter(f=>['blocker','high'].includes(f.sev)).length===0, scr:'audit',
       sub: has ? `${ev.open.length} open finding(s), ${S.adjustments.length} adjustment(s) posted` : 'materiality, analytics, smart checks' },
-    { n:4, lbl:'Financial statements generated', done: has && Math.abs(model().balGap)<=1, scr:'fs',
+    { n:5, lbl:'Financial statements generated', done: has && Math.abs(model().balGap)<=1, scr:'fs',
       sub: has ? (Math.abs(model().balGap)<=1 ? 'SOFP articulates' : `SOFP gap ${fmtRM(model().balGap)}`) : 'MPERS-format FS' },
-    { n:5, lbl:'Tax computation prepared', done: has && (num(S.tax.ca)>0 || num(S.tax.cp204)>0 || S.tax._touched), scr:'tax',
+    { n:6, lbl:'Tax computation prepared', done: has && (num(S.tax.ca)>0 || num(S.tax.cp204)>0 || S.tax._touched), scr:'tax',
       sub:'SME tiers 15% / 17% / 24% · Sch 3 capital allowances' },
-    { n:6, lbl:'Reports ready for licensed auditor', done: !!(S.sign.partner && S.sign.firm), scr:'reports',
+    { n:7, lbl:'Reports ready for licensed auditor', done: !!(S.sign.partner && S.sign.firm), scr:'reports',
       sub: S.sign.partner ? `${S.sign.partner}, ${S.sign.firm}` : 'auditor’s report, directors’ report, statutory declaration' }
   ];
   const doneCt = steps.filter(s=>s.done).length;
+  const nextStep = steps.find(s => !s.done);
   $('dash-pipeline-pct').textContent = Math.round(doneCt/steps.length*100) + '%';
   $('dash-pipeline').innerHTML = steps.map(s => `
-    <div class="flex items-start gap-3 cursor-pointer group" onclick="show('${s.scr}')">
+    <div class="flex items-start gap-3 cursor-pointer group ${nextStep === s ? 'bg-indigosoft/60 -mx-2 px-2 py-1.5 rounded-xl' : ''}" onclick="show('${s.scr}')">
       <div class="step-dot ${s.done?'bg-okbg text-ok':'bg-indigosoft text-indigo'}">
         ${s.done ? '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>' : s.n}
       </div>
-      <div class="min-w-0">
-        <div class="font-semibold text-[13.5px] group-hover:text-indigo">${s.lbl}</div>
+      <div class="min-w-0 flex-1">
+        <div class="font-semibold text-[13.5px] group-hover:text-indigo">${s.lbl}
+          ${nextStep === s ? '<span class="pill pill-info ml-1.5">next step</span>' : ''}</div>
         <div class="text-[12px] text-mut truncate">${s.sub}</div>
       </div>
     </div>`).join('');
@@ -1925,13 +1931,101 @@ function askSearch() {
   }
   for (const [topic, fn] of Object.entries(ASK_TOPICS)) {
     if (topic.startsWith(q) || q.includes(topic)) {
-      box.innerHTML = `<div class="border border-line rounded-xl p-3.5 bg-indigosoft text-[13px] leading-relaxed">${fn()}</div>`;
+      box.innerHTML = `<div class="border border-line rounded-xl p-3.5 bg-indigosoft text-[13px] leading-relaxed">${fn()}</div>` + aiCtaHTML();
       return;
     }
   }
   const hits = S.tb.filter(r => r.name.toLowerCase().includes(q) || CAT[r.cat].label.toLowerCase().includes(q)).slice(0,6);
-  box.innerHTML = hits.length ? hits.map(intelCardHTML).join('')
-    : `<div class="text-[13px] text-mut px-1 py-3">No account matches “${esc(q)}”. Topics: ${Object.keys(ASK_TOPICS).join(', ')}.</div>`;
+  box.innerHTML = (hits.length ? hits.map(intelCardHTML).join('')
+    : `<div class="text-[13px] text-mut px-1 py-3">No instant match for “${esc(q)}”. Topics: ${Object.keys(ASK_TOPICS).join(', ')}.</div>`)
+    + aiCtaHTML();
+}
+function aiCtaHTML() {
+  const q = $('ask-input').value.trim();
+  if (q.length < 4) return '';
+  return `<button class="btn btn-pri w-full !justify-start gap-2" onclick="askAI()">
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.7L19.6 10l-5.7 1.9L12 17.6l-1.9-5.7L4.4 10l5.7-1.9z"/><path d="M19 15l.9 2.6L22.5 18.5l-2.6.9L19 22l-.9-2.6-2.6-.9 2.6-.9z"/></svg>
+    Ask Mr Auditor AI: “${esc(q.length > 60 ? q.slice(0,60) + '…' : q)}”
+    <span class="ml-auto mono text-[10px] opacity-70">Enter</span>
+  </button>`;
+}
+
+/* ---------- Ask Mr Auditor AI (Anthropic via Supabase Edge Function) ---------- */
+function aiContext() {
+  const m = S.tb.length ? model() : null;
+  const ev = S.tb.length ? evaluate() : null;
+  return {
+    company: S.setup,
+    directors: S.directors.map(d => d.name),
+    keyFigures: m ? { revenue: m.revenue, grossProfit: m.gp, profitBeforeTax: m.pbt,
+      totalAssets: m.totalAssets, equity: m.equity, netCurrentAssets: m.netCurrent,
+      cash: m.nat.CASH, tradeReceivables: m.nat.TR, tradePayables: m.nat.TP,
+      borrowings: m.nat.BORR + m.nat.HP + m.nat.OD, directorsAdvances: m.nat.DIRADV,
+      owingToDirectors: m.nat.DIROWE } : null,
+    materiality: ev ? { overall: ev.mat.overall, performance: ev.mat.pm, benchmark: ev.mat.label } : null,
+    recommendedOpinion: ev ? { opinion: OPINION_LABEL[ev.opinion], why: ev.why, goingConcernFlag: ev.gc } : null,
+    openFindings: ev ? ev.open.slice(0, 10).map(f => ({ severity: f.sev, area: f.area, title: f.title, law: f.law })) : [],
+    deadlines: deadlines().map(d => ({ what: d.label, due: d.date, daysLeft: d.days })),
+    trialBalance: S.tb.slice(0, 80).map(r => ({ account: r.name, class: CAT[r.cat].label,
+      balance: Math.round((num(r.dr) - num(r.cr)) * CAT[r.cat].side), priorYear: num(r.py) || undefined })),
+    adjustmentsPosted: S.adjustments.map(a => a.desc),
+    intake: S.intake,
+  };
+}
+function aiFormat(t) {
+  return esc(t)
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/^- (.*)$/gm, '<span class="block pl-3">• $1</span>')
+    .replace(/\n\n/g, '<br><br>').replace(/\n/g, '<br>');
+}
+async function askAI() {
+  const q = $('ask-input').value.trim();
+  if (q.length < 4) return;
+  const box = $('ask-results');
+  if (!sb || !authUser) {
+    box.insertAdjacentHTML('afterbegin', '<div class="border border-line rounded-xl p-3.5 text-[13px] text-mut">Sign in to use Mr Auditor AI.</div>');
+    return;
+  }
+  const id = 'ai-' + Date.now();
+  box.insertAdjacentHTML('afterbegin', `
+    <div id="${id}" class="border border-indigo/30 rounded-xl p-3.5 bg-white">
+      <div class="flex items-center gap-2">
+        <span class="pill pill-info">Mr Auditor AI</span>
+        <span class="text-[12.5px] text-mut">reading the engagement file…</span>
+      </div>
+    </div>`);
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) throw new Error('Session expired — sign in again');
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/ask-mr-auditor`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${session.access_token}`,
+        'apikey': SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({ question: q, context: aiContext() }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+      throw new Error(data.error || (res.status === 404
+        ? 'The AI service is not deployed yet — deploy the ask-mr-auditor edge function.'
+        : `AI service error (${res.status})`));
+    }
+    $(id).innerHTML = `
+      <div class="flex items-center gap-2 mb-2">
+        <span class="pill pill-info">Mr Auditor AI</span>
+        <span class="text-[11px] text-mut">grounded in this engagement's data</span>
+      </div>
+      <div class="text-[13px] leading-relaxed">${aiFormat(data.answer || '')}</div>`;
+  } catch (e) {
+    const msg = /failed to fetch|networkerror/i.test(e.message || '')
+      ? 'The AI service is not reachable — the ask-mr-auditor edge function may not be deployed yet.'
+      : (e.message || 'Something went wrong — try again.');
+    $(id).innerHTML = `
+      <div class="flex items-center gap-2 mb-1"><span class="pill pill-warn">Mr Auditor AI</span></div>
+      <div class="text-[12.5px] text-mut">${esc(msg)}</div>`;
+  }
 }
 
 /* ---------- home / landing ---------- */
@@ -2634,6 +2728,9 @@ $('mobile-nav').classList.add('p-3','pt-6','overflow-y-auto');
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); askOpen(); }
   if (e.key === 'Escape') askClose();
+});
+$('ask-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); askAI(); }
 });
 show('home');
 (async () => {
