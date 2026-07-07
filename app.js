@@ -2584,74 +2584,226 @@ async function cloudLoadEngagements() {
   return data.map(row => { const c = hydrate(row.data); c.id = row.id; return c; });
 }
 
-/* ---------- demo ---------- */
-function loadDemo() {
+/* ---------- reset ---------- */
+async function resetAllData() {
+  if (!confirm('Delete every engagement (including all vault documents) and start with a single blank one? This cannot be undone.')) return;
+  const all = [...DB.clients];
+  for (const c of all) {
+    await cloudDeleteEngagementFiles(c.id).catch(()=>{});
+    await cloudDeleteEngagement(c.id).catch(()=>{});
+  }
+  const fresh = Object.assign(BLANK(), { id:nid(), created:Date.now() });
+  DB = { ver:2, activeId: fresh.id, clients:[fresh] };
+  S = fresh;
+  saveState();
+  updateTop();
+  show('home');
+  toast('All engagements cleared — starting fresh');
+}
+
+/* ---------- demo: TPO Sdn Bhd (restaurant) ---------- */
+const DEMO_NAMES = ['TPO Sdn Bhd', 'Delta Precision Engineering Sdn. Bhd.'];
+async function loadDemo() {
   // demo lives in its own engagement — never wipes real clients
-  const existing = DB.clients.find(c => c.setup.name === 'Delta Precision Engineering Sdn. Bhd.');
-  if (existing) DB.clients = DB.clients.filter(c => c !== existing);
+  const stale = DB.clients.filter(c => DEMO_NAMES.includes(c.setup.name));
+  DB.clients = DB.clients.filter(c => !stale.includes(c));
+  for (const old of stale) {
+    await cloudDeleteEngagementFiles(old.id).catch(()=>{});
+    await cloudDeleteEngagement(old.id).catch(()=>{});
+  }
   // drop the initial empty shell if untouched
   DB.clients = DB.clients.filter(c => c.setup.name || c.tb.length);
   const c = Object.assign(BLANK(), { id:nid(), created:Date.now() });
   DB.clients.push(c); DB.activeId = c.id; S = c;
-  const today = new Date();
-  const fyeYear = today.getMonth() >= 6 ? today.getFullYear() - 1 : today.getFullYear() - 1;
-  S.setup = { name:'Delta Precision Engineering Sdn. Bhd.', regno:'201801034567 (1293456-K)',
-    incdate:'2018-09-14', fye:`${fyeYear}-12-31`, activity:'precision metal component manufacturing and engineering services',
-    framework:'MPERS', capital:'500000', employees:'18', firstaudit:'no', foreign:'no',
-    address:'Lot 12, Jalan Perindustrian 3, Kawasan Perindustrian Balakong, 43300 Seri Kembangan, Selangor' };
-  S.directors = [ {name:'Tan Wei Keong', ic:'750812-10-5523'}, {name:'Nurul Aisyah binti Rahman', ic:'820304-14-5218'} ];
+  const fyeYear = new Date().getFullYear() - 1;
+  S.setup = { name:'TPO Sdn Bhd', regno:'201901022334 (1329988-P)',
+    incdate:'2019-03-12', fye:`${fyeYear}-12-31`, activity:'operation of a restaurant and catering services',
+    framework:'MPERS', capital:'300000', employees:'16', firstaudit:'no', foreign:'no',
+    address:'No. 12, Jalan SS2/61, 47300 Petaling Jaya, Selangor' };
+  S.directors = [ {name:'Pang Tze Onn', ic:'800505-14-5011'}, {name:'Lim Mei Fong', ic:'850912-10-6244'} ];
+  S.intake = { finperson:'Pang Tze Onn', contact:'Lim Mei Fong', email:'accounts@tpo.my', phone:'+60 12-338 8112',
+    prevauditor:'', software:'SQL Account', banks:'Maybank (CA + term loan), CIMB (CA), Public Bank (FD)',
+    borrowings:'yes', sst:'yes', einvoice:'no', bookkeeping:'average',
+    risknotes:'Mostly cash & card sales through POS; director takes advances; kitchen renovation done 2 years ago.' };
   const rows = [
     // name, dr, cr, py(natural magnitude)
-    ['Sales', 0, 4850000, 4120000],
-    ['Rental income', 0, 24000, 24000],
-    ['Interest income — fixed deposit', 0, 9300, 8100],
-    ['Purchases and direct costs', 3395000, 0, 2843000],
-    ['Salaries and wages', 486000, 0, 442000],
-    ['EPF contributions', 58300, 0, 53000],
-    ['SOCSO & EIS', 8900, 0, 8100],
-    ['Rental of premises', 96000, 0, 96000],
-    ['Utilities', 38200, 0, 35600],
-    ['Entertainment', 42500, 0, 36200],
-    ['Fines and penalties', 3500, 0, 1200],
-    ['Professional fees', 28000, 0, 26000],
-    ['Travelling expenses', 31800, 0, 27400],
-    ['Upkeep of motor vehicles', 44700, 0, 41200],
-    ['Insurance', 19600, 0, 18300],
-    ['General expenses', 12400, 0, 11800],
-    ['Interest on term loan', 68400, 0, 74100],
-    ['Hire purchase interest', 9200, 0, 11300],
-    ['Plant and machinery — cost', 1850000, 0, 1850000],
-    ['Accumulated depreciation', 0, 740000, 740000],
-    ['Inventories', 620000, 0, 545000],
-    ['Trade receivables', 1650000, 0, 1180000],
-    ['Other receivables & prepayments', 85000, 0, 76000],
-    ['Amount owing by director', 180000, 0, 120000],
-    ['Fixed deposit — Maybank', 300000, 0, 300000],
-    ['Maybank current account', 412000, 0, 388000],
-    ['CIMB current account', 0, 23450, 15000],
-    ['Suspense account', 8000, 0, 0],
-    ['Trade payables', 0, 918000, 804000],
-    ['Accruals and other payables', 0, 96500, 88200],
-    ['Amount owing to director', 0, 250000, 310000],
-    ['Term loan — Maybank', 0, 720000, 810000],
-    ['Hire purchase payables', 0, 186000, 232000],
-    ['Provision for taxation', 0, 74000, 61000],
-    ['Share capital', 0, 500000, 500000],
+    ['Sales — restaurant', 0, 2845000, 2510000],
+    ['Sales — catering', 0, 186000, 142000],
+    ['Interest income — fixed deposit', 0, 3800, 3600],
+    ['Food & beverage purchases', 1152000, 0, 1004000],
+    ['Salaries and wages', 598000, 0, 546000],
+    ['EPF contributions', 71800, 0, 65500],
+    ['SOCSO & EIS', 11200, 0, 10300],
+    ['Rental of premises', 216000, 0, 216000],
+    ['Utilities', 96500, 0, 88200],
+    ['Kitchen gas & fuel', 38400, 0, 35100],
+    ['Upkeep & cleaning', 21700, 0, 19800],
+    ['Entertainment', 12800, 0, 9600],
+    ['Fines and penalties', 2400, 0, 800],
+    ['Marketing & delivery platform commission', 84300, 0, 61500],
+    ['Insurance', 14200, 0, 13600],
+    ['Professional fees', 18500, 0, 17200],
+    ['Licenses & permits', 9600, 0, 9200],
+    ['Bank charges & card commissions', 28900, 0, 24400],
+    ['Interest on term loan', 31200, 0, 36800],
+    ['Hire purchase interest', 6400, 0, 8100],
+    ['Kitchen equipment & renovation — cost', 685000, 0, 685000],
+    ['Accumulated depreciation', 0, 274000, 274000],
+    ['Inventories — food & beverage', 24600, 0, 21300],
+    ['Trade receivables — catering', 68400, 0, 41200],
+    ['Deposits & prepayments', 64000, 0, 60000],
+    ['Amount owing by director', 95000, 0, 60000],
+    ['Fixed deposit — Public Bank', 120000, 0, 120000],
+    ['Maybank current account', 268400, 0, 195600],
+    ['CIMB current account', 0, 9850, 12000],
+    ['Cash floats', 6000, 0, 6000],
+    ['Suspense account', 5200, 0, 0],
+    ['Trade payables', 0, 156700, 141800],
+    ['Accruals and other payables', 0, 48300, 44100],
+    ['SST payable', 0, 14300, 12600],
+    ['Amount owing to director', 0, 180000, 240000],
+    ['Term loan — Maybank', 0, 285000, 342000],
+    ['Hire purchase payables', 0, 64500, 92000],
+    ['Provision for taxation', 0, 38000, 31000],
+    ['Share capital', 0, 300000, 300000],
   ];
   let dr = 0, cr = 0;
-  for (const [name, d, c] of rows) { dr += d; cr += c; }
+  for (const [name, d, cc] of rows) { dr += d; cr += cc; }
   // retained earnings b/f as the balancing figure (credit if dr>cr)
   const rePlug = dr - cr;
-  rows.push(['Retained earnings b/f', rePlug < 0 ? -rePlug : 0, rePlug > 0 ? rePlug : 0, 385000]);
-  S.tb = rows.map(([name, d, c, py]) => {
-    const cat = classify(name, d, c);
-    return { id:nid(), name, cat, dr: d||'', cr: c||'', py: py||'', autoWeak: !RULES.some(([re])=>re.test(name)) };
+  rows.push(['Retained earnings b/f', rePlug < 0 ? -rePlug : 0, rePlug > 0 ? rePlug : 0, 168000]);
+  S.tb = rows.map(([name, d, cc, py]) => {
+    const cat = classify(name, d, cc);
+    return { id:nid(), name, cat, dr: d||'', cr: cc||'', py: py||'', autoWeak: !RULES.some(([re])=>re.test(name)) };
   });
-  S.tax = Object.assign(BLANK().tax, { entertain:'21250', fines:'3500', ca:'128000', cp204:'96000' });
-  S.sign = Object.assign(BLANK().sign, { place:'Kuala Lumpur', date: dISO(new Date()) });
+  S.tax = Object.assign(BLANK().tax, { entertain:'6400', fines:'2400', ca:'52000', cp204:'60000' });
+  S.sign = Object.assign(BLANK().sign, { place:'Petaling Jaya', date: dISO(new Date()) });
   saveState();
+  if (sb && authUser) await cloudPushEngagement(c);
   show('dashboard');
-  toast('Demo engagement loaded — Delta Precision Engineering Sdn. Bhd.');
+  toast('Demo loaded — TPO Sdn Bhd. Filing the evidence vault…');
+  const filed = await demoSeedVault(c.id);
+  updateTop();
+  if (current === 'vault') renderVault();
+  toast(filed ? `TPO Sdn Bhd ready — ${filed} documents filed in the evidence vault` : 'TPO Sdn Bhd ready (sign in to file vault documents)');
+}
+
+/* mock client documents, consistent with the TPO trial balance */
+function demoDocs() {
+  const fy = new Date().getFullYear() - 1;
+  const tbCsv = 'Account,Debit,Credit,Prior year\n' + S.tb.map(r =>
+    `"${r.name}",${num(r.dr) || ''},${num(r.cr) || ''},${num(r.py) || ''}`).join('\n');
+  return [
+    ['Trial balance & management accounts', `TPO-trial-balance-FY${fy}.csv`, tbCsv],
+    ['Bank statements & confirmations', `Maybank-statement-Dec-${fy}.csv`,
+`Maybank Islamic Berhad — Statement of Account
+Account: TPO SDN BHD 5142 8890 1123 | Period: 01/12/${fy} - 31/12/${fy}
+Date,Description,Debit,Credit,Balance
+01/12/${fy},BALANCE B/F,,,231855.20
+05/12/${fy},CARD SETTLEMENT MEPS,,48211.40,280066.60
+08/12/${fy},SUPPLIER PAYMENT - FRESHMART,36420.00,,243646.60
+12/12/${fy},CARD SETTLEMENT MEPS,,52108.75,295755.35
+15/12/${fy},RENTAL - LIM PROPERTIES,18000.00,,277755.35
+20/12/${fy},PAYROLL,49820.00,,227935.35
+22/12/${fy},CATERING RECEIPT - SUNWAY EVENTS,,26400.00,254335.35
+28/12/${fy},TERM LOAN INSTALMENT,5890.65,,248444.70
+31/12/${fy},CARD SETTLEMENT MEPS,,19955.30,268400.00
+31/12/${fy},CLOSING BALANCE,,,268400.00`],
+    ['Bank statements & confirmations', `CIMB-statement-Dec-${fy}.csv`,
+`CIMB Bank Berhad — Statement of Account
+Account: TPO SDN BHD 8006 7712 34 | Period: 01/12/${fy} - 31/12/${fy}
+Date,Description,Debit,Credit,Balance
+01/12/${fy},BALANCE B/F,,,4120.50
+10/12/${fy},SUPPLIER PAYMENT - OCEAN SEAFOOD,8960.00,,-4839.50
+18/12/${fy},TRANSFER IN,,5000.00,160.50
+27/12/${fy},SST PAYMENT - CUSTOMS,10010.50,,-9850.00
+31/12/${fy},CLOSING BALANCE (OD),,,-9850.00
+Note: account overdrawn at year end — no formal OD facility on file.`],
+    ['Sales & receivables evidence', `POS-z-report-monthly-summary-FY${fy}.csv`,
+`TPO Sdn Bhd — POS Z-Report Monthly Summary FY${fy}
+Month,Gross sales (RM),Service tax collected (RM)
+Jan,215400,12924
+Feb,198200,11892
+Mar,224800,13488
+Apr,231500,13890
+May,246900,14814
+Jun,238700,14322
+Jul,242300,14538
+Aug,251600,15096
+Sep,233400,14004
+Oct,244100,14646
+Nov,252800,15168
+Dec,265300,15918
+Total,2845000,170700`],
+    ['Purchases & payables evidence', `Supplier-statement-FreshMart-Dec-${fy}.txt`,
+`FRESHMART FOOD SUPPLIES SDN BHD — Statement of Account
+Customer: TPO SDN BHD | As at 31/12/${fy}
+Balance outstanding: RM 62,340.00
+Aging: Current RM 41,200 | 30 days RM 15,890 | 60 days RM 5,250
+Terms: 30 days. Please reconcile against your trade payables ledger.`],
+    ['Fixed asset register & invoices', `Fixed-asset-register-FY${fy}.csv`,
+`TPO Sdn Bhd — Fixed Asset Register as at 31/12/${fy}
+Asset,Date acquired,Cost (RM),Rate,Acc. dep. b/f (RM)
+Kitchen renovation & fit-out,${fy-2}-04-15,320000,10%,64000
+Commercial kitchen equipment,${fy-2}-05-02,215000,20%,86000
+Freezers & chillers,${fy-2}-05-02,68000,20%,27200
+POS system & computers,${fy-2}-06-10,32000,33%,21120
+Furniture & fittings,${fy-2}-04-20,50000,10%,10000
+Total,,685000,,208320
+NOTE: register acc. dep. b/f (RM208,320) does not tie to GL (RM274,000) — investigate.
+No depreciation charged in FY${fy} yet.`],
+    ['Inventory count sheets', `Stock-count-sheet-31Dec${fy}.csv`,
+`TPO Sdn Bhd — Physical Stock Count 31/12/${fy} (counted by: LMF, witnessed by: auditor TBD)
+Item,Qty,Unit cost (RM),Value (RM)
+Frozen seafood,86 kg,38.00,3268
+Meat & poultry,124 kg,24.50,3038
+Dry goods & sauces,lot,,6890
+Beverages & liquor,lot,,8404
+Packaging & disposables,lot,,3000
+Total,,,24600`],
+    ['Payroll · EPF · SOCSO', `EPF-Borang-A-Dec-${fy}.txt`,
+`KWSP BORANG A — Employer: TPO SDN BHD (E/No: 199x1234567)
+Month: December ${fy} | Employees: 16
+Total wages: RM 49,820 | Employer EPF: RM 6,477 | Employee EPF: RM 5,480
+Payment date: 08/01/${fy+1} (within statutory deadline)`],
+    ['SSM & statutory records', `SSM-company-profile-TPO.txt`,
+`SSM e-Info — Company Profile
+Name: TPO SDN BHD | Reg No: 201901022334 (1329988-P)
+Incorporated: 12/03/2019 | Status: Existing
+Registered office: No. 12, Jalan SS2/61, 47300 Petaling Jaya, Selangor
+Nature of business: Operation of a restaurant and catering services
+Issued share capital: RM 300,000 (300,000 ordinary shares)
+Directors: PANG TZE ONN (800505-14-5011), LIM MEI FONG (850912-10-6244)
+Shareholders: PANG TZE ONN — 210,000 shares (70%), LIM MEI FONG — 90,000 shares (30%)`],
+    ['Tax — CP204 / Form C / assessments', `CP204-YA${fy}.txt`,
+`LHDN CP204 — Estimate of Tax Payable YA ${fy}
+Company: TPO SDN BHD | Tax file: C 24881234-08
+Estimate submitted: RM 60,000 (12 instalments of RM 5,000)
+Instalments paid to date: RM 60,000
+Note: compare against final computation — s.107C(10) 10% penalty if actual tax exceeds estimate by >30%.`],
+    ['Agreements & facility letters', `Tenancy-agreement-summary.txt`,
+`Tenancy Agreement — Summary
+Landlord: Lim Properties Sdn Bhd | Tenant: TPO Sdn Bhd
+Premises: No. 12, Jalan SS2/61, Petaling Jaya
+Term: 3 years from 01/01/${fy-1}, monthly rent RM 18,000 (RM 216,000/yr)
+Deposit held: RM 54,000 (3 months) — see Deposits & prepayments.`],
+    ['Prior-year FS & working papers', `TPO-audited-FS-FYE${fy-1}-summary.txt`,
+`TPO SDN BHD — Audited Financial Statements FYE 31/12/${fy-1} (extract)
+Auditors: KL Wong & Co PLT (AF 002211) — unmodified opinion dated 30/05/${fy}
+Revenue: RM 2,652,000 | PBT: RM 402,300 | Total assets: RM 1,190,000
+Retained earnings c/f: RM 168,000 (= opening RE for FY${fy})
+Full signed copy in permanent file.`],
+  ];
+}
+async function demoSeedVault(clientId) {
+  if (!sb || !authUser) return 0;
+  let filed = 0;
+  for (const [cat, name, content] of demoDocs()) {
+    const type = name.endsWith('.csv') ? 'text/csv' : 'text/plain';
+    const file = new File([content], name, { type });
+    if (await vaultUploadOne(file, cat, clientId)) filed++;
+  }
+  return filed;
 }
 
 /* ---------- auth gate (Supabase) ---------- */
@@ -2700,18 +2852,9 @@ async function authSignOut() {
 }
 async function afterAuth() {
   $('gate').style.display = 'none';
+  // cloud is the source of truth — no localStorage auto-migration (it would resurrect
+  // deliberately deleted engagements from a stale browser cache)
   let cloud = await cloudLoadEngagements();
-  if (!cloud.length) {
-    // one-time migration: carry any local browser data (e.g. the demo) into the new account
-    let local = [];
-    try { const v2 = localStorage.getItem('mr-auditor-v2');
-      if (v2) local = (JSON.parse(v2).clients || []).map(hydrate).filter(c => c.setup.name || c.tb.length); } catch(e) {}
-    if (local.length) {
-      for (const c of local) await cloudPushEngagement(c);
-      cloud = local;
-      toast(`Migrated ${local.length} local engagement(s) to your account`);
-    }
-  }
   if (!cloud.length) cloud = [Object.assign(BLANK(), { id:nid(), created:Date.now() })];
   DB = { ver:2, activeId: cloud[0].id, clients: cloud };
   S = cloud[0];
