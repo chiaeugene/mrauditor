@@ -149,6 +149,14 @@ how hard each gap blocks real adoption.
 usage; F3 (tick-marking) completes the WP story Phase A started; the rest can wait for
 specific client demand.
 
+**Status (09.07.2026): F2, F3, F4 shipped** (commit `db29ca7`) — Queries/PBC screen, evidence
+tick-marking, append-only activity trail, and document intelligence (the AI now reads actual
+filed evidence natively via Claude's PDF/image support, not just filenames — with an explicit
+`skipped[]` report so nothing is silently dropped). **Two dashboard steps still needed before
+these work live:** run `supabase-schema-round2.sql` in the SQL editor (adds `activity_log`,
+`evidence_ticks`, `queries` tables), and redeploy the `ask-mr-auditor` edge function. F1
+(multi-user roles) remains the next big structural gap.
+
 ---
 
 ## Why this beats normal audit software (the genuine differentiators)
