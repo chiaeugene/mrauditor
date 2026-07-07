@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mr Auditor — Malaysian Statutory Audit Intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: { extend: {
+    fontFamily: { sans: ['"IBM Plex Sans"','sans-serif'], mono: ['"IBM Plex Mono"','monospace'] },
+    colors: {
+      ink:'#0B1437', navy:'#101C4A', indigo:'#3B49C9', indigosoft:'#EEF0FC',
+      mint:'#34D399', cyanx:'#22D3EE',
+      ok:'#15803D', warn:'#B45309', risk:'#B91C1C',
+      okbg:'#ECFDF3', warnbg:'#FFF7E6', riskbg:'#FEF2F2',
+      paper:'#F6F8FC', line:'#E4E9F2', mut:'#5B667E'
+    }
+  }}
+}
+</script>
+<style>
+  html { font-feature-settings: "tnum"; }
+  body { background:#F6F8FC; color:#0B1437; }
+  .mono { font-family:"IBM Plex Mono",monospace; font-variant-numeric: tabular-nums; }
+  .card { background:#fff; border:1px solid #E4E9F2; border-radius:14px; }
+  .card-pad { padding:1.25rem; }
+  .navlink { display:flex; align-items:center; gap:.65rem; padding:.55rem .8rem; border-radius:10px; color:#B9C2DC; font-weight:500; font-size:.875rem; cursor:pointer; transition:background .15s,color .15s; }
+  .navlink:hover { background:rgba(255,255,255,.06); color:#fff; }
+  .navlink.active { background:#3B49C9; color:#fff; }
+  .navlink svg { width:18px; height:18px; flex:none; }
+  .fieldlbl { display:block; font-size:.72rem; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:#5B667E; margin-bottom:.3rem; }
+  .field { width:100%; border:1px solid #E4E9F2; border-radius:10px; padding:.55rem .75rem; font-size:.875rem; background:#fff; color:#0B1437; }
+  .field:focus { outline:2px solid #3B49C9; outline-offset:0; border-color:#3B49C9; }
+  select.field { appearance:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235B667E' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right .7rem center; padding-right:2rem; }
+  .btn { display:inline-flex; align-items:center; gap:.45rem; border-radius:10px; padding:.55rem 1rem; font-size:.85rem; font-weight:600; cursor:pointer; transition:filter .15s, background .15s; border:1px solid transparent; }
+  .btn svg { width:16px; height:16px; }
+  .btn-pri { background:#3B49C9; color:#fff; } .btn-pri:hover { filter:brightness(1.1); }
+  .btn-ghost { background:#fff; border-color:#E4E9F2; color:#0B1437; } .btn-ghost:hover { background:#F6F8FC; }
+  .btn-mint { background:#0E7A55; color:#fff; } .btn-mint:hover { filter:brightness(1.1); }
+  .btn-risk { background:#FEF2F2; border-color:#FECACA; color:#B91C1C; }
+  .pill { display:inline-flex; align-items:center; gap:.3rem; border-radius:999px; padding:.15rem .6rem; font-size:.72rem; font-weight:600; white-space:nowrap; }
+  .pill-ok { background:#ECFDF3; color:#15803D; } .pill-warn { background:#FFF7E6; color:#B45309; }
+  .pill-risk { background:#FEF2F2; color:#B91C1C; } .pill-info { background:#EEF0FC; color:#3B49C9; }
+  .pill-mut { background:#EEF1F6; color:#5B667E; }
+  .kpi-lbl { font-size:.72rem; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:#5B667E; }
+  .kpi-val { font-family:"IBM Plex Mono",monospace; font-size:1.45rem; font-weight:600; line-height:1.2; }
+  table.tbl { width:100%; border-collapse:collapse; font-size:.83rem; }
+  table.tbl th { text-align:left; font-size:.7rem; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:#5B667E; padding:.5rem .6rem; border-bottom:1px solid #E4E9F2; }
+  table.tbl td { padding:.45rem .6rem; border-bottom:1px solid #EEF1F6; vertical-align:middle; }
+  table.tbl tr:hover td { background:#FAFBFE; }
+  .num { font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; }
+  .fs-doc { font-size:.85rem; line-height:1.55; }
+  .fs-doc h3 { font-weight:700; font-size:.95rem; margin:1.1rem 0 .4rem; }
+  .fs-doc table { width:100%; border-collapse:collapse; }
+  .fs-doc td, .fs-doc th { padding:.28rem .4rem; }
+  .fs-line td { border-top:1px solid #E4E9F2; }
+  .fs-total td { border-top:1.5px solid #0B1437; border-bottom:3px double #0B1437; font-weight:600; }
+  .rep-doc { font-size:.86rem; line-height:1.65; max-width:52rem; }
+  .rep-doc h2 { font-size:1.05rem; font-weight:700; margin:0 0 .2rem; }
+  .rep-doc h3 { font-size:.9rem; font-weight:700; margin:1rem 0 .3rem; }
+  .rep-doc p { margin:.5rem 0; }
+  .step-dot { width:26px; height:26px; border-radius:999px; display:flex; align-items:center; justify-content:center; font-size:.72rem; font-weight:700; flex:none; }
+  .screen { display:none; } .screen.active { display:block; }
+  .sevrow { border-left:3px solid transparent; }
+  .sev-blocker { border-left-color:#7F1D1D; } .sev-high { border-left-color:#B91C1C; }
+  .sev-medium { border-left-color:#B45309; } .sev-low { border-left-color:#3B49C9; } .sev-info { border-left-color:#94A3B8; }
+  ::placeholder { color:#9AA3B8; }
+  @media print {
+    body * { visibility:hidden; }
+    #print-zone, #print-zone * { visibility:visible; }
+    #print-zone { position:absolute; inset:0; padding:2rem; background:#fff; }
+    .no-print { display:none !important; }
+    .pagebrk { page-break-before:always; }
+  }
+  .pagebrk { border-top:1px dashed #E4E9F2; margin-top:2.5rem; padding-top:2rem; }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
+  .main-wrap { min-width:0; }
+</style>
+</head>
+<body class="font-sans antialiased">
+
+<div class="flex min-h-screen">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="hidden lg:flex w-64 flex-col fixed inset-y-0 bg-ink text-white z-20">
+    <div class="flex items-center gap-3 px-5 pt-6 pb-5">
+      <div class="w-10 h-10 rounded-xl flex items-center justify-center" style="background:linear-gradient(135deg,#8B5CF6,#5A7CF0,#34D399)">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-5"/><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/></svg>
+      </div>
+      <div>
+        <div class="font-bold text-[15px] leading-tight">Mr Auditor</div>
+        <div class="text-[11px] text-white/50 leading-tight">Statutory Audit Intelligence</div>
+      </div>
+    </div>
+    <nav class="px-3 space-y-1 flex-1 overflow-y-auto pb-4" id="sidenav">
+      <div class="navlink active" data-scr="dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+        Dashboard
+      </div>
+      <div class="text-[10px] font-semibold uppercase tracking-wider text-white/35 px-3 pt-4 pb-1">Audit workflow</div>
+      <div class="navlink" data-scr="setup">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 10h.01M15 10h.01M9 14h.01M15 14h.01"/></svg>
+        <span>1 · Engagement Setup</span>
+      </div>
+      <div class="navlink" data-scr="tb">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-2 5a3 3 0 006 0L7 7"/><path d="M17 7l-2 5a3 3 0 006 0l-2-5"/></svg>
+        <span>2 · Trial Balance</span>
+      </div>
+      <div class="navlink" data-scr="audit">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/><path d="M8.5 11l1.8 1.8 3.2-3.6"/></svg>
+        <span>3 · Audit Engine</span>
+      </div>
+      <div class="navlink" data-scr="fs">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h8M8 9h2"/></svg>
+        <span>4 · Financial Statements</span>
+      </div>
+      <div class="navlink" data-scr="tax">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 15l8-8"/><circle cx="9" cy="9" r="1.2"/><circle cx="15" cy="15" r="1.2"/></svg>
+        <span>5 · Tax Computation</span>
+      </div>
+      <div class="navlink" data-scr="reports">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15l2 2 4-4"/><path d="M20 8v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2h8l6 6z"/></svg>
+        <span>6 · Reports &amp; Sign-off</span>
+      </div>
+      <div class="navlink" data-scr="pack">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 016.5 22H20V7l-5-5H6.5A2.5 2.5 0 004 4.5z"/><path d="M15 2v5h5"/><path d="M8 13h8M8 17h5"/></svg>
+        <span>7 · Full Audit Pack</span>
+      </div>
+      <div class="text-[10px] font-semibold uppercase tracking-wider text-white/35 px-3 pt-4 pb-1">Reference</div>
+      <div class="navlink" data-scr="ref">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
+        Regulatory Compass
+      </div>
+    </nav>
+    <div class="px-5 pb-5 text-[11px] text-white/40 leading-snug">
+      Draft engine only. Every audit must be reviewed and signed by an approved company auditor (s.263–266, Companies Act 2016).
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <div class="main-wrap flex-1 lg:ml-64">
+
+    <!-- topbar -->
+    <header class="sticky top-0 z-10 bg-white/90 backdrop-blur border-b border-line px-4 lg:px-8 h-16 flex items-center gap-3 no-print">
+      <button class="lg:hidden btn btn-ghost !px-2.5" onclick="toggleNav()" aria-label="Menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <div class="min-w-0">
+        <div id="top-title" class="font-bold text-[15px] truncate">Dashboard</div>
+        <div id="top-sub" class="text-[12px] text-mut truncate">No engagement loaded</div>
+      </div>
+      <div class="ml-auto flex items-center gap-2">
+        <span id="top-status" class="pill pill-mut">Not started</span>
+        <button class="btn btn-ghost hidden sm:inline-flex" onclick="loadDemo()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+          Load demo
+        </button>
+        <button class="btn btn-pri" onclick="saveState(true)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
+          Save
+        </button>
+      </div>
+    </header>
+
+    <!-- mobile nav drawer -->
+    <div id="nav-overlay" class="fixed inset-0 bg-ink/50 z-30 hidden lg:hidden" onclick="closeNav()"></div>
+    <aside id="mobile-nav" class="fixed inset-y-0 left-0 w-64 bg-ink text-white z-40 -translate-x-full transition-transform lg:hidden"></aside>
+
+    <main class="px-4 lg:px-8 py-6 max-w-[1200px]">
+
+    <!-- ================= DASHBOARD ================= -->
+    <section class="screen active" id="scr-dashboard">
+      <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6" id="dash-kpis"></div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-5 gap-4 mb-6">
+        <div class="card card-pad lg:col-span-3">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="font-bold text-[15px]">Audit pipeline — where this file stands</h2>
+            <span id="dash-pipeline-pct" class="pill pill-info">0%</span>
+          </div>
+          <div id="dash-pipeline" class="space-y-3"></div>
+        </div>
+        <div class="card card-pad lg:col-span-2">
+          <h2 class="font-bold text-[15px] mb-4">Statutory deadline radar</h2>
+          <div id="dash-deadlines" class="space-y-2.5 text-[13px]"></div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="card card-pad">
+          <h2 class="font-bold text-[15px] mb-3">Top findings needing attention</h2>
+          <div id="dash-findings" class="space-y-2"></div>
+        </div>
+        <div class="card card-pad">
+          <h2 class="font-bold text-[15px] mb-3">Mr Auditor's opinion barometer</h2>
+          <div id="dash-opinion"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= SETUP ================= -->
+    <section class="screen" id="scr-setup">
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div class="lg:col-span-2 space-y-4">
+          <div class="card card-pad">
+            <h2 class="font-bold text-[15px] mb-4">Company particulars</h2>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div class="sm:col-span-2"><label class="fieldlbl">Company name</label><input class="field" id="f-name" placeholder="e.g. Delta Precision Engineering Sdn. Bhd." oninput="onSetupChange()"></div>
+              <div><label class="fieldlbl">Registration no. (SSM)</label><input class="field mono" id="f-regno" placeholder="202001012345 (1234567-X)" oninput="onSetupChange()"></div>
+              <div><label class="fieldlbl">Date of incorporation</label><input class="field mono" id="f-incdate" type="date" onchange="onSetupChange()"></div>
+              <div><label class="fieldlbl">Financial year end</label><input class="field mono" id="f-fye" type="date" onchange="onSetupChange()"></div>
+              <div><label class="fieldlbl">Principal activity</label><input class="field" id="f-activity" placeholder="e.g. Precision metal component manufacturing" oninput="onSetupChange()"></div>
+              <div><label class="fieldlbl">Reporting framework</label>
+                <select class="field" id="f-framework" onchange="onSetupChange()">
+                  <option value="MPERS">MPERS (private entity)</option>
+                  <option value="MFRS">MFRS (full IFRS-equivalent)</option>
+                </select>
+              </div>
+              <div><label class="fieldlbl">Paid-up capital (RM)</label><input class="field mono num-in" id="f-capital" placeholder="500,000" oninput="onSetupChange()"></div>
+              <div><label class="fieldlbl">Number of employees</label><input class="field mono" id="f-employees" type="number" min="0" oninput="onSetupChange()"></div>
+              <div><label class="fieldlbl">First audit?</label>
+                <select class="field" id="f-firstaudit" onchange="onSetupChange()"><option value="no">No — recurring engagement</option><option value="yes">Yes — first financial statements</option></select>
+              </div>
+              <div><label class="fieldlbl">Foreign / corporate shareholding &gt; 20%?</label>
+                <select class="field" id="f-foreign" onchange="onSetupChange()"><option value="no">No</option><option value="yes">Yes</option></select>
+              </div>
+              <div class="sm:col-span-2"><label class="fieldlbl">Registered office address</label><input class="field" id="f-address" placeholder="Level 3, Wisma ..., Kuala Lumpur" oninput="onSetupChange()"></div>
+            </div>
+          </div>
+
+          <div class="card card-pad">
+            <div class="flex items-center justify-between mb-4">
+              <h2 class="font-bold text-[15px]">Directors</h2>
+              <button class="btn btn-ghost !py-1.5" onclick="addDirector()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> Add director
+              </button>
+            </div>
+            <div id="directors-list" class="space-y-2"></div>
+            <p class="text-[12px] text-mut mt-3">Minimum one resident director for a private company (s.196 CA 2016). The first two named directors are used on the Statement by Directors; the first named is used for the Statutory Declaration unless changed on the Reports screen.</p>
+          </div>
+        </div>
+
+        <div class="space-y-4">
+          <div class="card card-pad">
+            <h2 class="font-bold text-[15px] mb-1">Audit exemption check</h2>
+            <p class="text-[12px] text-mut mb-3">Practice Directive 10/2024 — phased thresholds; qualify on any 2 of 3 criteria for the current + two preceding financial years.</p>
+            <div id="exemption-box"></div>
+          </div>
+          <div class="card card-pad">
+            <h2 class="font-bold text-[15px] mb-3">Statutory clock</h2>
+            <div id="setup-deadlines" class="space-y-2.5 text-[13px]"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= TRIAL BALANCE ================= -->
+    <section class="screen" id="scr-tb">
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div class="xl:col-span-2 space-y-4">
+          <div class="card card-pad">
+            <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+              <h2 class="font-bold text-[15px]">Trial balance — current year</h2>
+              <div class="flex gap-2">
+                <button class="btn btn-ghost !py-1.5" onclick="addTbRow()">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> Add row
+                </button>
+                <button class="btn btn-risk !py-1.5" onclick="clearTb()">Clear all</button>
+              </div>
+            </div>
+            <div id="tb-balance-banner" class="mb-3"></div>
+            <div class="overflow-x-auto">
+              <table class="tbl min-w-[760px]">
+                <thead><tr>
+                  <th class="w-[32%]">Account</th><th class="w-[19%]">Classification</th>
+                  <th class="num">Debit (RM)</th><th class="num">Credit (RM)</th><th class="num">Prior year (RM)</th><th></th>
+                </tr></thead>
+                <tbody id="tb-body"></tbody>
+                <tfoot><tr id="tb-totals" class="font-semibold"></tr></tfoot>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div class="space-y-4">
+          <div class="card card-pad">
+            <h2 class="font-bold text-[15px] mb-2">Paste from Excel / accounting system</h2>
+            <p class="text-[12px] text-mut mb-2">Columns: <span class="mono">Account, Debit, Credit</span> and optionally <span class="mono">Prior year</span> — tab, comma or semicolon separated. Signed single-amount format (<span class="mono">Account, Amount</span>, credits negative) also accepted. Mr Auditor auto-classifies every line.</p>
+            <textarea class="field mono !text-[12px]" id="tb-paste" rows="8" placeholder="Sales&#9;&#9;4850000&#10;Trade receivables&#9;1650000&#10;..."></textarea>
+            <div class="flex gap-2 mt-2">
+              <button class="btn btn-pri" onclick="importPaste()">Import &amp; classify</button>
+              <button class="btn btn-ghost" onclick="document.getElementById('tb-paste').value=''">Clear box</button>
+            </div>
+            <div id="paste-result" class="mt-2 text-[12px]"></div>
+          </div>
+          <div class="card card-pad">
+            <h2 class="font-bold text-[15px] mb-2">Classification health</h2>
+            <div id="tb-class-health" class="text-[13px] space-y-2"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= AUDIT ENGINE ================= -->
+    <section class="screen" id="scr-audit">
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4" id="audit-mat-cards"></div>
+
+      <div class="card card-pad mb-4">
+        <div class="flex flex-wrap items-end gap-4">
+          <div>
+            <label class="fieldlbl">Materiality benchmark (ISA 320)</label>
+            <select class="field !w-64" id="mat-benchmark" onchange="runEngine()">
+              <option value="revenue">Revenue — 1% (stable trading co.)</option>
+              <option value="pbt">Profit before tax — 5%</option>
+              <option value="assets">Total assets — 1.5% (asset-heavy / loss-making)</option>
+            </select>
+          </div>
+          <div>
+            <label class="fieldlbl">Performance materiality</label>
+            <select class="field !w-40" id="mat-pm" onchange="runEngine()">
+              <option value="0.75">75% (normal risk)</option>
+              <option value="0.6">60% (elevated risk)</option>
+              <option value="0.5">50% (high risk)</option>
+            </select>
+          </div>
+          <button class="btn btn-pri ml-auto" onclick="runEngine(true)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 11-6.2-8.6"/><path d="M21 3v6h-6"/></svg>
+            Re-run audit engine
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-4">
+        <div class="card card-pad">
+          <h2 class="font-bold text-[15px] mb-3">Analytical review — ratios &amp; movements (ISA 520)</h2>
+          <div class="overflow-x-auto"><table class="tbl min-w-[480px]">
+            <thead><tr><th>Indicator</th><th class="num">This year</th><th class="num">Prior year</th><th>Read</th></tr></thead>
+            <tbody id="ratio-body"></tbody>
+          </table></div>
+        </div>
+        <div class="card card-pad">
+          <h2 class="font-bold text-[15px] mb-3">Misstatement ledger vs materiality (ISA 450)</h2>
+          <div id="misstate-box"></div>
+        </div>
+      </div>
+
+      <div class="card card-pad mb-4">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="font-bold text-[15px]">Findings — the issues auditors actually hit</h2>
+          <span id="findings-count" class="pill pill-info">0 findings</span>
+        </div>
+        <div id="findings-list" class="space-y-2.5"></div>
+      </div>
+
+      <div class="card card-pad">
+        <div class="flex items-center justify-between mb-1">
+          <h2 class="font-bold text-[15px]">Adjustments register (AJE)</h2>
+          <span id="aje-count" class="pill pill-info">0 posted</span>
+        </div>
+        <p class="text-[12px] text-mut mb-3">Every proposed and manual audit journal, exactly like your audit software's AJE schedule. Manual journals must balance before they post.</p>
+        <div id="aje-list" class="space-y-2 mb-4"></div>
+        <div class="border-t border-line pt-3">
+          <div class="font-semibold text-[13px] mb-2">New manual journal</div>
+          <input class="field mb-2" id="aje-desc" placeholder="Description — e.g. AJE 3: Accrue December bank interest per facility statement">
+          <div id="aje-rows" class="space-y-2 mb-2"></div>
+          <div class="flex flex-wrap gap-2 items-center">
+            <button class="btn btn-ghost !py-1.5" onclick="ajeAddRow()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> Add line
+            </button>
+            <button class="btn btn-mint !py-1.5" onclick="ajePost()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg> Post journal
+            </button>
+            <span id="aje-balance" class="text-[12.5px] mono ml-auto"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= FINANCIAL STATEMENTS ================= -->
+    <section class="screen" id="scr-fs">
+      <div class="flex flex-wrap items-center gap-2 mb-4 no-print">
+        <span class="text-[13px] text-mut">Generated from the classified trial balance, with accepted audit adjustments applied.</span>
+        <button class="btn btn-ghost ml-auto" onclick="printSection('fs-render')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
+          Print / PDF
+        </button>
+      </div>
+      <div class="card card-pad fs-doc" id="fs-render"></div>
+    </section>
+
+    <!-- ================= TAX ================= -->
+    <section class="screen" id="scr-tax">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="card card-pad">
+          <h2 class="font-bold text-[15px] mb-1">Adjustments to accounting profit</h2>
+          <p class="text-[12px] text-mut mb-4">Income Tax Act 1967 — s.33(1) wholly &amp; exclusively test, s.39 prohibitions. Depreciation is pulled from the TB automatically.</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div><label class="fieldlbl">Non-deductible entertainment (50% portion)</label><input class="field mono num-in tax-in" id="tax-entertain" placeholder="0"></div>
+            <div><label class="fieldlbl">Fines &amp; penalties</label><input class="field mono num-in tax-in" id="tax-fines" placeholder="0"></div>
+            <div><label class="fieldlbl">Unapproved donations</label><input class="field mono num-in tax-in" id="tax-donations" placeholder="0"></div>
+            <div><label class="fieldlbl">Unrealised forex loss / other add-backs</label><input class="field mono num-in tax-in" id="tax-other-add" placeholder="0"></div>
+            <div><label class="fieldlbl">Non-taxable income (e.g. exempt FD interest — single-tier dividends)</label><input class="field mono num-in tax-in" id="tax-exempt-inc" placeholder="0"></div>
+            <div><label class="fieldlbl">Capital allowances claimed (Sch 3)</label><input class="field mono num-in tax-in" id="tax-ca" placeholder="0"></div>
+            <div><label class="fieldlbl">Unabsorbed losses b/f utilised</label><input class="field mono num-in tax-in" id="tax-losses" placeholder="0"></div>
+            <div><label class="fieldlbl">CP204 instalments paid to date</label><input class="field mono num-in tax-in" id="tax-cp204" placeholder="0"></div>
+          </div>
+          <div class="mt-4 p-3 rounded-xl bg-indigosoft text-[12.5px]" id="tax-sme-box"></div>
+        </div>
+        <div class="card card-pad">
+          <h2 class="font-bold text-[15px] mb-3">Tax computation — YA <span id="tax-ya" class="mono"></span></h2>
+          <div id="tax-comp"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= REPORTS ================= -->
+    <section class="screen" id="scr-reports">
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4 no-print">
+        <div class="card card-pad lg:col-span-2">
+          <h2 class="font-bold text-[15px] mb-1">Licensed auditor sign-off</h2>
+          <p class="text-[12px] text-mut mb-4">Only an approved company auditor (Ministry of Finance approval under s.263 CA 2016, registered with MIA) may sign the report. Mr Auditor prepares everything; the human signs.</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div><label class="fieldlbl">Audit firm</label><input class="field rep-in" id="s-firm" placeholder="e.g. Tan & Rahim PLT"></div>
+            <div><label class="fieldlbl">Firm no. (AF)</label><input class="field mono rep-in" id="s-af" placeholder="AF 001234"></div>
+            <div><label class="fieldlbl">Engagement partner</label><input class="field rep-in" id="s-partner" placeholder="Name as per MIA register"></div>
+            <div><label class="fieldlbl">Approval no.</label><input class="field mono rep-in" id="s-approval" placeholder="e.g. 03210/05/2027 J"></div>
+            <div><label class="fieldlbl">Town / state of signing</label><input class="field rep-in" id="s-place" placeholder="Kuala Lumpur"></div>
+            <div><label class="fieldlbl">Date of report</label><input class="field mono rep-in" id="s-date" type="date"></div>
+          </div>
+        </div>
+        <div class="card card-pad">
+          <h2 class="font-bold text-[15px] mb-3">Opinion selector</h2>
+          <div id="opinion-reco" class="mb-3"></div>
+          <select class="field rep-in" id="s-opinion">
+            <option value="unmodified">Unmodified (clean)</option>
+            <option value="qualified-mis">Qualified — material misstatement</option>
+            <option value="qualified-scope">Qualified — scope limitation</option>
+            <option value="adverse">Adverse</option>
+            <option value="disclaimer">Disclaimer of opinion</option>
+          </select>
+          <label class="flex items-center gap-2 mt-3 text-[13px]"><input type="checkbox" id="s-goingconcern" class="rep-in"> Include Material Uncertainty — Going Concern</label>
+          <label class="flex items-center gap-2 mt-2 text-[13px]"><input type="checkbox" id="s-otherinfo" class="rep-in" checked> Directors are responsible for other information</label>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap gap-2 mb-4 no-print" id="rep-tabs">
+        <button class="btn btn-pri rep-tab" data-rep="auditor">Auditor's report</button>
+        <button class="btn btn-ghost rep-tab" data-rep="directors">Directors' report</button>
+        <button class="btn btn-ghost rep-tab" data-rep="statement">Statement by directors</button>
+        <button class="btn btn-ghost rep-tab" data-rep="statdec">Statutory declaration</button>
+        <button class="btn btn-ghost rep-tab" data-rep="checklist">Completion checklist</button>
+        <button class="btn btn-ghost ml-auto" onclick="printSection('rep-render')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
+          Print / PDF
+        </button>
+      </div>
+      <div class="card card-pad rep-doc" id="rep-render"></div>
+    </section>
+
+    <!-- ================= FULL AUDIT PACK ================= -->
+    <section class="screen" id="scr-pack">
+      <div class="flex flex-wrap items-center gap-2 mb-4 no-print">
+        <div class="text-[13px] text-mut max-w-xl">The complete statutory set in lodgement order — cover, contents, directors' report, statements with note cross-references, and the full notes pack. Everything regenerates live from the adjusted trial balance.</div>
+        <button class="btn btn-pri ml-auto" onclick="printSection('pack-render')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
+          Print / PDF the full pack
+        </button>
+      </div>
+      <div class="card card-pad rep-doc !max-w-none" id="pack-render"></div>
+    </section>
+
+    <!-- ================= REFERENCE ================= -->
+    <section class="screen" id="scr-ref">
+      <div id="ref-render" class="grid grid-cols-1 lg:grid-cols-2 gap-4"></div>
+    </section>
+
+    </main>
+  </div>
+</div>
+
+<div id="print-zone" class="hidden"></div>
+<div id="toast" class="fixed bottom-5 right-5 z-50 hidden px-4 py-2.5 rounded-xl bg-ink text-white text-[13px] font-medium shadow-lg"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
