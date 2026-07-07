@@ -10,6 +10,13 @@
 
 'use strict';
 
+/* ---------------- Supabase ---------------- */
+/* The anon key is meant to be public (row-level security enforces access) —
+   safe to commit, same as documented in Supabase's own quickstart. */
+const SUPABASE_URL = 'https://ycsctxcgdssifzijgavs.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inljc2N0eGNnZHNzaWZ6aWpnYXZzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM0MjA5NzYsImV4cCI6MjA5ODk5Njk3Nn0.L4pz_nPE1UFyCg9V4MOIWvgEAt2zShZvftZ8JuKd4yM';
+let sb = null, authUser = null;
+
 /* ---------------- state ---------------- */
 const BLANK = () => ({
   setup: { name:'', regno:'', incdate:'', fye:'', activity:'', framework:'MPERS',
@@ -28,7 +35,8 @@ const BLANK = () => ({
   bankin: {},             // bank-in reconciliation inputs
   repTab: 'auditor'
 });
-const nid = () => 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+/* real UUIDs so engagement/file ids are valid Postgres uuid values once synced to Supabase */
+const nid = () => (crypto.randomUUID ? crypto.randomUUID() : 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2,7));
 
 /* Multi-client: DB holds every engagement; S always points at the active one. */
 let DB = { ver:2, activeId:null, clients:[] };
@@ -1713,89 +1721,82 @@ function renderClients() {
   staggerChildren('clients-grid', 45);
 }
 function newClientPrompt() { regOpen(); }
-function deleteClient(id) {
+async function deleteClient(id) {
   const c = DB.clients.find(x => x.id === id);
   if (!confirm(`Delete the engagement "${c?.setup.name || 'Untitled'}" and all its attached evidence? This cannot be undone.`)) return;
   DB.clients = DB.clients.filter(x => x.id !== id);
-  idbDeleteClient(id).catch(()=>{});
   if (!DB.clients.length) newClient('');
   if (DB.activeId === id) { DB.activeId = DB.clients[0].id; S = activeClient(); }
   saveState(); render(current); updateTop();
+  await cloudDeleteEngagementFiles(id).catch(()=>{});
+  await cloudDeleteEngagement(id).catch(()=>{});
 }
 
-/* ---------- evidence vault (IndexedDB) ---------- */
+/* ---------- evidence vault (Supabase Storage + evidence_files) ---------- */
 const DOCCATS = ['Bank statements & confirmations','Sales & receivables evidence','Purchases & payables evidence',
   'Fixed asset register & invoices','Inventory count sheets','Payroll · EPF · SOCSO','SSM & statutory records',
   'Tax — CP204 / Form C / assessments','Agreements & facility letters','Prior-year FS & working papers','Others'];
-let idb = null;
-function idbOpen() {
-  return new Promise((res, rej) => {
-    const r = indexedDB.open('mr-auditor-files', 1);
-    r.onupgradeneeded = e => { const st = e.target.result.createObjectStore('files', { keyPath:'id' });
-      st.createIndex('client','clientId',{unique:false}); };
-    r.onsuccess = () => { idb = r.result; res(); };
-    r.onerror = () => rej(r.error);
-  });
+const sanitizeName = n => n.replace(/[^\w.\-]+/g, '_');
+async function vaultListRows(clientId) {
+  if (!sb || !authUser) return [];
+  const { data, error } = await sb.from('evidence_files').select('*').eq('engagement_id', clientId).order('uploaded_at', { ascending:false });
+  return error ? [] : data;
 }
-const idbTx = (mode, fn) => new Promise((res, rej) => {
-  if (!idb) return rej(new Error('no idb'));
-  const tx = idb.transaction('files', mode); const out = fn(tx.objectStore('files'));
-  tx.oncomplete = () => res(out && out._val !== undefined ? out._val : undefined);
-  tx.onerror = () => rej(tx.error);
-});
-const idbPut = rec => idbTx('readwrite', st => st.put(rec));
-const idbDel = id => idbTx('readwrite', st => st.delete(id));
-function idbList(clientId) {
-  return new Promise((res, rej) => {
-    if (!idb) return res([]);
-    const out = [];
-    const c = idb.transaction('files').objectStore('files').index('client').openCursor(IDBKeyRange.only(clientId));
-    c.onsuccess = e => { const cur = e.target.result; if (cur) { out.push(cur.value); cur.continue(); } else res(out); };
-    c.onerror = () => rej(c.error);
-  });
+async function vaultCount() { return (await vaultListRows(S.id)).length; }
+async function vaultUploadOne(file, cat, clientId) {
+  if (!sb || !authUser) return false;
+  const path = `${authUser.id}/${clientId}/${nid()}-${sanitizeName(file.name)}`;
+  const { error: upErr } = await sb.storage.from('evidence').upload(path, file, { contentType: file.type || undefined });
+  if (upErr) { console.error('vault upload failed', upErr); return false; }
+  const { error: insErr } = await sb.from('evidence_files').insert({
+    engagement_id: clientId, owner: authUser.id, category: cat,
+    file_name: file.name, mime_type: file.type, size_bytes: file.size, storage_path: path });
+  if (insErr) { console.error('vault record failed', insErr); return false; }
+  return true;
 }
-async function idbDeleteClient(clientId) {
-  const files = await idbList(clientId);
-  for (const f of files) await idbDel(f.id);
-}
-async function vaultCount(){ try { return (await idbList(S.id)).length; } catch(e){ return 0; } }
 async function vaultUpload(input) {
   const cat = $('vault-cat').value || 'Others';
   const files = [...input.files]; input.value = '';
   if (!files.length) return;
-  for (const f of files) {
-    await idbPut({ id:nid(), clientId:S.id, cat, name:f.name, type:f.type, size:f.size,
-      uploadedAt: Date.now(), blob:f });
-  }
-  toast(`${files.length} file(s) filed under ${cat}`);
+  let ok = 0;
+  for (const f of files) if (await vaultUploadOne(f, cat, S.id)) ok++;
+  toast(ok ? `${ok} file(s) filed under ${cat}` : 'Upload failed — check your connection');
   renderVault(); updateTop();
 }
+async function vaultRow(id) {
+  const { data } = await sb.from('evidence_files').select('storage_path,file_name').eq('id', id).single();
+  return data;
+}
 async function vaultView(id) {
-  const files = await idbList(S.id); const f = files.find(x => x.id === id);
-  if (!f) return;
-  const url = URL.createObjectURL(f.blob);
-  window.open(url, '_blank');
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  const row = await vaultRow(id); if (!row) return;
+  const { data, error } = await sb.storage.from('evidence').createSignedUrl(row.storage_path, 60);
+  if (error) { toast('Could not open file'); return; }
+  window.open(data.signedUrl, '_blank');
 }
 async function vaultDownload(id) {
-  const files = await idbList(S.id); const f = files.find(x => x.id === id);
-  if (!f) return;
-  const url = URL.createObjectURL(f.blob);
-  const a = document.createElement('a'); a.href = url; a.download = f.name; a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  const row = await vaultRow(id); if (!row) return;
+  const { data, error } = await sb.storage.from('evidence').createSignedUrl(row.storage_path, 60, { download: row.file_name });
+  if (error) { toast('Could not download file'); return; }
+  const a = document.createElement('a'); a.href = data.signedUrl; a.download = row.file_name; a.click();
 }
 async function vaultDelete(id) {
   if (!confirm('Remove this file from the vault?')) return;
-  await idbDel(id); renderVault(); updateTop();
+  const row = await vaultRow(id);
+  if (row) await sb.storage.from('evidence').remove([row.storage_path]);
+  await sb.from('evidence_files').delete().eq('id', id);
+  renderVault(); updateTop();
+}
+async function cloudDeleteEngagementFiles(id) {
+  if (!sb) return;
+  const { data } = await sb.from('evidence_files').select('storage_path').eq('engagement_id', id);
+  if (data && data.length) await sb.storage.from('evidence').remove(data.map(r => r.storage_path));
 }
 const fmtSize = b => b > 1048576 ? (b/1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b/1024)) + ' KB';
 async function renderVault() {
   $('vault-cat').innerHTML = DOCCATS.map(c => `<option>${c}</option>`).join('');
-  let files = [];
-  try { files = await idbList(S.id); } catch(e) {}
-  files.sort((a,b) => b.uploadedAt - a.uploadedAt);
+  const files = await vaultListRows(S.id);
   $('vault-grid').innerHTML = DOCCATS.map(cat => {
-    const fs = files.filter(f => f.cat === cat);
+    const fs = files.filter(f => f.category === cat);
     return `
     <div class="card card-pad">
       <div class="flex items-center justify-between mb-2">
@@ -1805,8 +1806,8 @@ async function renderVault() {
       ${fs.map(f => `
         <div class="flex items-center gap-2 py-1.5 border-b border-line/60 last:border-0">
           <svg viewBox="0 0 24 24" width="15" height="15" class="flex-none" fill="none" stroke="#3B49C9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
-          <button class="text-[12.5px] font-medium text-indigo hover:underline truncate flex-1 text-left" onclick="vaultView('${f.id}')" title="View ${esc(f.name)}">${esc(f.name)}</button>
-          <span class="text-[11px] text-mut mono flex-none">${fmtSize(f.size)}</span>
+          <button class="text-[12.5px] font-medium text-indigo hover:underline truncate flex-1 text-left" onclick="vaultView('${f.id}')" title="View ${esc(f.file_name)}">${esc(f.file_name)}</button>
+          <span class="text-[11px] text-mut mono flex-none">${fmtSize(f.size_bytes)}</span>
           <button class="btn btn-ghost !px-1.5 !py-1 flex-none" onclick="vaultDownload('${f.id}')" aria-label="Download">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
           </button>
@@ -2068,13 +2069,7 @@ async function regNext() {
     sst:g('r-sst'), einvoice:g('r-einvoice'), bookkeeping:g('r-bookkeeping'), risknotes:g('r-risknotes') };
   saveState();
   let uploaded = 0;
-  try { if (!idb) await idbOpen();
-    for (const { cat, file } of regDraft.files) {
-      await idbPut({ id:nid(), clientId:c.id, cat, name:file.name, type:file.type, size:file.size,
-        uploadedAt:Date.now(), blob:file });
-      uploaded++;
-    }
-  } catch(e) {}
+  for (const { cat, file } of regDraft.files) { if (await vaultUploadOne(file, cat, c.id)) uploaded++; }
   // reset wizard fields for next time
   ['r-name','r-regno','r-incdate','r-fye','r-activity','r-address','r-capital','r-employees','r-finperson',
    'r-contact','r-email','r-phone','r-prevauditor','r-software','r-banks','r-risknotes'].forEach(id => $(id).value = '');
@@ -2458,7 +2453,12 @@ function printSection(id) {
 /* ---------- persistence ---------- */
 function saveState(announce) {
   try { localStorage.setItem('mr-auditor-v2', JSON.stringify(DB)); } catch(e) {}
-  if (announce) toast('Engagement saved locally');
+  if (sb && authUser) {
+    const client = S;
+    clearTimeout(_cloudTimers[client.id]);
+    if (announce) cloudPushEngagement(client).then(() => toast('Saved to your account'));
+    else _cloudTimers[client.id] = setTimeout(() => cloudPushEngagement(client), 800);
+  } else if (announce) toast('Saved locally');
 }
 function hydrate(d) {
   const c = Object.assign(BLANK(), d);
@@ -2467,21 +2467,27 @@ function hydrate(d) {
   c.notes = Object.assign({}, d.notes);
   return c;
 }
-function loadState() {
-  try {
-    const v2 = localStorage.getItem('mr-auditor-v2');
-    if (v2) {
-      const d = JSON.parse(v2);
-      DB = { ver:2, activeId:d.activeId, clients:(d.clients||[]).map(hydrate) };
-    } else {
-      const v1 = localStorage.getItem('mr-auditor-v1');   // migrate single-engagement era
-      if (v1) { const c = hydrate(JSON.parse(v1)); c.id = nid(); c.created = Date.now();
-        DB.clients = [c]; DB.activeId = c.id; localStorage.removeItem('mr-auditor-v1'); saveState(); }
-    }
-  } catch(e) {}
-  if (!DB.clients.length) newClient('');
-  if (!activeClient()) DB.activeId = DB.clients[0].id;
-  S = activeClient();
+
+/* ---------- cloud sync (Supabase) ---------- */
+const _cloudTimers = {};
+async function cloudPushEngagement(client) {
+  if (!sb || !authUser) return;
+  const { error } = await sb.from('engagements').upsert({
+    id: client.id, owner: authUser.id, name: client.setup.name || '',
+    fye: client.setup.fye || null, data: client
+  });
+  if (error) console.error('cloud save failed', error);
+}
+async function cloudDeleteEngagement(id) {
+  if (!sb || !authUser) return;
+  const { error } = await sb.from('engagements').delete().eq('id', id);
+  if (error) console.error('cloud delete failed', error);
+}
+async function cloudLoadEngagements() {
+  if (!sb || !authUser) return [];
+  const { data, error } = await sb.from('engagements').select('id,data').eq('owner', authUser.id).order('created_at', { ascending:true });
+  if (error || !data) return [];
+  return data.map(row => { const c = hydrate(row.data); c.id = row.id; return c; });
 }
 
 /* ---------- demo ---------- */
@@ -2554,31 +2560,88 @@ function loadDemo() {
   toast('Demo engagement loaded — Delta Precision Engineering Sdn. Bhd.');
 }
 
-/* ---------- passcode gate ---------- */
-const GATE_CODE = '130386';
-function gateSubmit(e) {
+/* ---------- auth gate (Supabase) ---------- */
+function authSetError(msg) { const el = $('gate-err'); el.textContent = msg; el.classList.remove('hidden'); }
+function authToggleMode() {
+  const form = $('gate-form');
+  const toSignup = form.dataset.mode !== 'signup';
+  form.dataset.mode = toSignup ? 'signup' : 'signin';
+  $('gate-title').textContent = toSignup ? 'Create your account' : 'Welcome back';
+  $('gate-sub').textContent = toSignup ? 'Set up access to your firm\'s audit files.' : 'Sign in to your Mr Auditor account.';
+  $('gate-submit').textContent = toSignup ? 'Create account' : 'Sign in';
+  $('gate-toggle').textContent = toSignup ? 'Already have an account? Sign in' : 'Don\'t have an account? Sign up';
+  $('gate-err').classList.add('hidden');
+}
+async function authSubmit(e) {
   e.preventDefault();
-  const input = $('gate-input');
-  if (input.value.trim() === GATE_CODE) {
-    try { localStorage.setItem('mr-auditor-unlocked', '1'); } catch(err) {}
-    $('gate').style.display = 'none';
-  } else {
-    $('gate-err').classList.remove('hidden');
-    input.value = '';
-    input.focus();
+  const email = $('gate-email').value.trim();
+  const pass = $('gate-pass').value;
+  const mode = $('gate-form').dataset.mode || 'signin';
+  $('gate-err').classList.add('hidden');
+  $('gate-submit').disabled = true;
+  try {
+    if (mode === 'signup') {
+      const { data, error } = await sb.auth.signUp({ email, password: pass });
+      if (error) throw error;
+      if (!data.session) { authSetError('Account created — check your email to confirm it, then sign in.'); return; }
+      authUser = data.user;
+    } else {
+      const { data, error } = await sb.auth.signInWithPassword({ email, password: pass });
+      if (error) throw error;
+      authUser = data.user;
+    }
+    await afterAuth();
+  } catch (err) {
+    authSetError(err.message || 'Something went wrong — try again.');
+  } finally {
+    $('gate-submit').disabled = false;
   }
   return false;
 }
+async function authSignOut() {
+  if (sb) await sb.auth.signOut();
+  authUser = null;
+  try { localStorage.removeItem('mr-auditor-v2'); } catch(e) {}
+  location.reload();
+}
+async function afterAuth() {
+  $('gate').style.display = 'none';
+  let cloud = await cloudLoadEngagements();
+  if (!cloud.length) {
+    // one-time migration: carry any local browser data (e.g. the demo) into the new account
+    let local = [];
+    try { const v2 = localStorage.getItem('mr-auditor-v2');
+      if (v2) local = (JSON.parse(v2).clients || []).map(hydrate).filter(c => c.setup.name || c.tb.length); } catch(e) {}
+    if (local.length) {
+      for (const c of local) await cloudPushEngagement(c);
+      cloud = local;
+      toast(`Migrated ${local.length} local engagement(s) to your account`);
+    }
+  }
+  if (!cloud.length) cloud = [Object.assign(BLANK(), { id:nid(), created:Date.now() })];
+  DB = { ver:2, activeId: cloud[0].id, clients: cloud };
+  S = cloud[0];
+  saveState();
+  render(current);
+  updateTop();
+}
 
 /* ---------- boot ---------- */
-document.querySelectorAll('#sidenav .navlink').forEach(n => n.addEventListener('click', () => show(n.dataset.scr)));
+document.querySelectorAll('#sidenav .navlink[data-scr]').forEach(n => n.addEventListener('click', () => show(n.dataset.scr)));
 $('mobile-nav').innerHTML = document.querySelector('#sidenav').outerHTML.replace('id="sidenav"','id="sidenav-m"') ;
-document.querySelectorAll('#mobile-nav .navlink').forEach(n => n.addEventListener('click', () => show(n.dataset.scr)));
+document.querySelectorAll('#mobile-nav .navlink[data-scr]').forEach(n => n.addEventListener('click', () => show(n.dataset.scr)));
 $('mobile-nav').classList.add('p-3','pt-6','overflow-y-auto');
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); askOpen(); }
   if (e.key === 'Escape') askClose();
 });
-loadState();
-idbOpen().then(() => updateTop()).catch(() => {});
 show('home');
+(async () => {
+  if (!window.supabase) { authSetError('Could not load the login service — check your connection and reload.'); return; }
+  sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const { data: { session } } = await sb.auth.getSession();
+  if (session) { authUser = session.user; await afterAuth(); }
+  sb.auth.onAuthStateChange((event) => {
+    if (event === 'SIGNED_OUT') location.reload();
+  });
+})();
