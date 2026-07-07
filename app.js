@@ -2229,6 +2229,7 @@ function renderToolkit() {
   if (tkTab === 'bankin') return tkBankin(el);
   if (tkTab === 'lead') return tkLead(el);
   if (tkTab === 'roll') return tkRoll(el);
+  if (tkTab === 'mbrs') return tkMbrs(el);
   if (tkTab === 'data') return tkData(el);
 }
 /* capital allowance schedule */
@@ -2482,6 +2483,199 @@ function rollForward() {
   toast(`Rolled forward — FYE ${dMY(c.setup.fye)} engagement created`);
   show('setup');
 }
+/* ---------- MBRS / SSM export ----------
+   SSM's own mTool (the free desktop app used to prepare the XBRL filing) has a
+   built-in "Import source document → Auto Tag" feature: you feed it a clean
+   Excel file and it matches line items to SSMxT taxonomy elements by
+   accounting-term synonym (confirmed from SSM's mTool User Manual v2.4).
+   We cannot fabricate a valid XBRL instance against SSM's proprietary
+   taxonomy — a wrong tag would be worse than no export. What we CAN do,
+   honestly and to real effect, is build exactly the clean source document
+   mTool's own Auto Tag engine is designed to read: current-year-before-
+   prior-year columns, one clean table per statement, no merged cells,
+   standard synonym-friendly labels. This does not submit anything — the
+   auditor still opens it in mTool, runs Auto Tag, reviews, and validates. */
+function buildMbrsWorkbook() {
+  const m = model(), p = hasPY() ? model(true) : null;
+  const cy = S.setup.fye ? new Date(S.setup.fye).getFullYear() : '';
+  const g = k => m.nat[k], gp = k => p ? p.nat[k] : 0;
+  const wb = XLSX.utils.book_new();
+  const addSheet = (name, aoa) => XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), name.slice(0, 31));
+
+  // Filing Information — the questions mTool's "Filing Information" step asks first
+  addSheet('Filing Information', [
+    ['MBRS Filing Information — source data for mTool "Change Filing Information"'],
+    [],
+    ['Company name', S.setup.name || ''],
+    ['Registration number', S.setup.regno || ''],
+    ['Financial year end', S.setup.fye || ''],
+    ['Reporting framework', S.setup.framework === 'MPERS' ? 'MPERS' : 'MFRS'],
+    ['Entry point', S.setup.framework === 'MPERS' ? 'FS-MPERS' : 'FS-MFRS'],
+    ['Principal activity', S.setup.activity || ''],
+    ['Registered office', S.setup.address || ''],
+    ['Currency', 'RM (Ringgit Malaysia)'],
+    ['Level of rounding', 'Unit (RM1)'],
+    ['Number of employees', S.setup.employees || ''],
+    ['Directors', S.directors.map(d => d.name).join('; ')],
+    ['Auditor', S.sign.firm ? `${S.sign.firm} (${S.sign.af || ''})` : ''],
+    ['Engagement partner', S.sign.partner || ''],
+    ['Date of auditors\' report', S.sign.date || ''],
+    [],
+    ['Note: import this file into mTool via Toolbox → Source Document, then Auto Tag each template. Review every tagged and untagged (orange) cell before validating.'],
+  ]);
+
+  // Statement of Financial Position — current year BEFORE prior year, per mTool guidance
+  const sofp = [
+    ['Statement of financial position', cy, cy ? cy - 1 : ''],
+    ['Non-current assets', '', ''],
+    ['Property, plant and equipment', g('PPE') - g('ACCDEP'), p ? gp('PPE') - gp('ACCDEP') : ''],
+  ];
+  if (g('INTANG')) sofp.push(['Intangible assets', g('INTANG'), p ? gp('INTANG') : '']);
+  if (g('INVEST')) sofp.push(['Other investments', g('INVEST'), p ? gp('INVEST') : '']);
+  sofp.push(['Total non-current assets', m.nca, p ? p.nca : '']);
+  sofp.push(['Current assets', '', '']);
+  if (g('INV')) sofp.push(['Inventories', g('INV'), p ? gp('INV') : '']);
+  sofp.push(['Trade and other receivables', g('TR') + g('OR'), p ? gp('TR') + gp('OR') : '']);
+  if (g('DIRADV')) sofp.push(['Amount owing by directors', g('DIRADV'), p ? gp('DIRADV') : '']);
+  if (g('RPTREC')) sofp.push(['Amount owing by related parties', g('RPTREC'), p ? gp('RPTREC') : '']);
+  if (g('FD')) sofp.push(['Fixed deposits placed with licensed banks', g('FD'), p ? gp('FD') : '']);
+  sofp.push(['Cash and bank balances', g('CASH'), p ? gp('CASH') : '']);
+  sofp.push(['Total current assets', m.ca, p ? p.ca : '']);
+  sofp.push(['Total assets', m.totalAssets, p ? p.totalAssets : '']);
+  sofp.push(['Equity', '', '']);
+  sofp.push(['Share capital', g('SC'), p ? gp('SC') : '']);
+  sofp.push(['Retained earnings/(accumulated losses)', m.reClose, p ? p.reClose : '']);
+  sofp.push(['Total equity', m.equity, p ? p.equity : '']);
+  sofp.push(['Non-current liabilities', '', '']);
+  if (g('BORR')) sofp.push(['Bank borrowings, non-current', g('BORR'), p ? gp('BORR') : '']);
+  if (g('HP')) sofp.push(['Hire purchase payables, non-current', g('HP'), p ? gp('HP') : '']);
+  if (g('DEFTAX')) sofp.push(['Deferred tax liabilities', g('DEFTAX'), p ? gp('DEFTAX') : '']);
+  sofp.push(['Current liabilities', '', '']);
+  sofp.push(['Trade and other payables', g('TP') + g('OP'), p ? gp('TP') + gp('OP') : '']);
+  if (g('DIROWE')) sofp.push(['Amount owing to directors', g('DIROWE'), p ? gp('DIROWE') : '']);
+  if (g('RPTPAY')) sofp.push(['Amount owing to related parties', g('RPTPAY'), p ? gp('RPTPAY') : '']);
+  if (g('OD')) sofp.push(['Bank overdraft', g('OD'), p ? gp('OD') : '']);
+  if (g('TAXPAY')) sofp.push(['Current tax payable', g('TAXPAY'), p ? gp('TAXPAY') : '']);
+  sofp.push(['Total liabilities', m.totalLiab, p ? p.totalLiab : '']);
+  sofp.push(['Total equity and liabilities', m.equity + m.totalLiab, p ? p.equity + p.totalLiab : '']);
+  addSheet('SOFP', sofp);
+
+  // Statement of Profit or Loss and OCI
+  addSheet('SOPL', [
+    ['Statement of profit or loss and other comprehensive income', cy, cy ? cy - 1 : ''],
+    ['Revenue', m.revenue, p ? p.revenue : ''],
+    ['Cost of sales', -m.cos, p ? -p.cos : ''],
+    ['Gross profit', m.gp, p ? p.gp : ''],
+    ['Other income', m.othinc, p ? p.othinc : ''],
+    ['Administrative expenses', -(g('ADMIN') + g('SELL')), p ? -(gp('ADMIN') + gp('SELL')) : ''],
+    ['Depreciation and amortisation', -g('DEPR'), p ? -gp('DEPR') : ''],
+    ['Finance costs', -m.fin, p ? -p.fin : ''],
+    ['Profit/(loss) before tax', m.pbt, p ? p.pbt : ''],
+    ['Tax expense/(income)', -m.taxexp, p ? -p.taxexp : ''],
+    ['Profit/(loss) for the financial year', m.pat, p ? p.pat : ''],
+    ['Other comprehensive income, net of tax', 0, p ? 0 : ''],
+    ['Total comprehensive income for the financial year', m.pat, p ? p.pat : ''],
+  ]);
+
+  // Statement of Changes in Equity
+  addSheet('SOCE', [
+    ['Statement of changes in equity', 'Share capital', 'Retained earnings', 'Total'],
+    ['At beginning of financial year', g('SC'), g('RE'), g('SC') + g('RE')],
+    ['Total comprehensive income for the financial year', 0, m.pat, m.pat],
+    ...(g('DIV') ? [['Dividends declared', 0, -g('DIV'), -g('DIV')]] : []),
+    ['At end of financial year', g('SC'), m.reClose, m.equity],
+  ]);
+
+  // Statement of Cash Flows (only meaningful with PY comparatives)
+  if (p) {
+    const dep = g('DEPR');
+    const dWC = k => -((m.nat[k] || 0) - (p.nat[k] || 0));
+    const dWCl = k => ((m.nat[k] || 0) - (p.nat[k] || 0));
+    const ops = m.pbt + dep + m.fin + dWC('INV') + dWC('TR') + dWC('OR') + dWC('DIRADV') + dWC('RPTREC')
+      + dWCl('TP') + dWCl('OP') + dWCl('DIROWE') + dWCl('RPTPAY');
+    const taxPaid = -(p.nat.TAXPAY + m.taxexp - m.nat.TAXPAY);
+    const capex = -(m.nat.PPE - p.nat.PPE);
+    const invFlow = capex - (m.nat.INTANG - p.nat.INTANG) - (m.nat.INVEST - p.nat.INVEST) - (m.nat.FD - p.nat.FD);
+    const finFlow = (m.nat.BORR - p.nat.BORR) + (m.nat.HP - p.nat.HP) - m.fin - m.nat.DIV + (m.nat.SC - p.nat.SC);
+    const net = ops + taxPaid + invFlow + finFlow;
+    const openCash = p.nat.CASH - p.nat.OD, closeCash = m.nat.CASH - m.nat.OD;
+    addSheet('SOCF', [
+      ['Statement of cash flows', cy],
+      ['Profit before tax', m.pbt], ['Depreciation and amortisation', dep], ['Finance costs', m.fin],
+      ['Changes in working capital', ops - m.pbt - dep - m.fin], ['Cash generated from operations', ops],
+      ['Tax paid', taxPaid], ['Net cash used in investing activities', invFlow],
+      ['Net cash from/(used in) financing activities', finFlow],
+      ['Net increase/(decrease) in cash and cash equivalents', net],
+      ['Cash and cash equivalents at beginning of financial year', openCash],
+      ['Cash and cash equivalents at end of financial year', closeCash],
+    ]);
+  }
+
+  // Notes — flattened tabular figures for the note-heavy elements (PPE movement, staff costs, tax reconciliation)
+  const notesRows = [['Notes to the financial statements — key figures', cy, cy ? cy - 1 : '']];
+  notesRows.push(['Depreciation charge for the year', g('DEPR'), p ? gp('DEPR') : '']);
+  notesRows.push(['Accumulated depreciation, end of year', g('ACCDEP'), p ? gp('ACCDEP') : '']);
+  const statTax = Math.round(m.pbt * 0.24);
+  notesRows.push(['Tax at statutory rate of 24%', statTax, '']);
+  notesRows.push(['Tax expense for the year', m.taxexp, p ? gp('TAXEXP') : '']);
+  const staffRows = S.tb.filter(r => /salar|wages|bonus|gaji/i.test(r.name));
+  const staff = staffRows.reduce((s, r) => s + num(r.dr) - num(r.cr), 0);
+  if (staff) notesRows.push(['Staff costs (salaries, wages, bonuses)', staff, '']);
+  if (g('DIRADV')) notesRows.push(['Amount owing by directors — non-trade, unsecured, interest-free, repayable on demand', g('DIRADV'), p ? gp('DIRADV') : '']);
+  if (g('DIROWE')) notesRows.push(['Amount owing to directors — non-trade, unsecured, interest-free, repayable on demand', g('DIROWE'), p ? gp('DIROWE') : '']);
+  addSheet('Notes — key figures', notesRows);
+
+  // Key Financial Indicators — the simpler KFI-MFRS/KFI-MPERS entry point some exempt companies use
+  addSheet('KFI', [
+    ['Key Financial Indicators', cy],
+    ['Revenue', m.revenue], ['Profit/(loss) before tax', m.pbt], ['Profit/(loss) for the year', m.pat],
+    ['Total assets', m.totalAssets], ['Total liabilities', m.totalLiab], ['Total equity', m.equity],
+    ['Number of employees', num(S.setup.employees)],
+  ]);
+
+  return wb;
+}
+function exportMbrs() {
+  if (!S.tb.length) { toast('Import a trial balance first'); return; }
+  if (typeof XLSX === 'undefined') { toast('Spreadsheet writer failed to load'); return; }
+  const wb = buildMbrsWorkbook();
+  const fname = `MBRS-source-${(S.setup.name || 'engagement').replace(/[^\w]+/g, '-')}-FYE${S.setup.fye || ''}.xlsx`;
+  XLSX.writeFile(wb, fname);
+  toast('MBRS source document downloaded — import into mTool via Toolbox → Source Document, then Auto Tag');
+}
+function tkMbrs(el) {
+  const has = S.tb.length > 0;
+  el.innerHTML = `
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+    <div class="card card-pad lg:col-span-2">
+      <h2 class="font-bold text-[15px] mb-1">MBRS / SSM lodgement export</h2>
+      <p class="text-[12.5px] text-mut mb-3">Malaysia's MBRS filing is prepared in SSM's free desktop tool (<strong>mTool</strong>), which validates and generates the actual XBRL instance against SSM's taxonomy (SSMxT) — that step has to happen in mTool itself; no third-party tool can safely fabricate a valid XBRL file for you.</p>
+      <p class="text-[12.5px] text-mut mb-4">What Mr Auditor <em>can</em> do — and does — is prepare mTool's own recommended input: a clean source document for mTool's built-in <strong>Auto Tag</strong> feature, which matches line items to taxonomy elements by accounting-term synonym. This turns hours of manual re-keying into a few minutes of review.</p>
+      <ol class="text-[12.5px] list-decimal pl-5 space-y-1 mb-4">
+        <li>Download the source document below (one Excel file, current-year figures before prior-year — exactly as mTool expects).</li>
+        <li>In mTool: <strong>Create Filing</strong> → select the FS-${S.setup.framework === 'MPERS' ? 'MPERS' : 'MFRS'} entry point → Toolbox → <strong>Source Document</strong> → choose this file.</li>
+        <li>Select each statement's table rows → click <strong>Auto Tag</strong>. Tagged cells turn pale green; untagged cells turn orange — review and complete those manually.</li>
+        <li><strong>Validate</strong>, fix any errors, then generate and submit the XBRL file via mPortal as usual.</li>
+      </ol>
+      <button class="btn btn-pri" ${!has ? 'disabled' : ''} onclick="exportMbrs()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+        Download MBRS source document (.xlsx)
+      </button>
+      ${!has ? '<p class="text-[12px] text-warn mt-2">Import a trial balance first.</p>' : ''}
+      <p class="text-[11.5px] text-mut mt-3">Sheets included: Filing Information, SOFP, SOPL, SOCE${hasPY() ? ', SOCF' : ''}, key note figures, and KFI. This is a preparation aid, not a filed document — the auditor remains responsible for what's ultimately lodged.</p>
+    </div>
+    <div class="card card-pad">
+      <h2 class="font-bold text-[15px] mb-2">Entry point</h2>
+      <table class="fs-doc" style="width:100%">
+        <tr><td>Framework</td><td class="num">${S.setup.framework}</td></tr>
+        <tr><td>Entry point</td><td class="num mono">FS-${S.setup.framework === 'MPERS' ? 'MPERS' : 'MFRS'}</td></tr>
+        <tr><td>FYE</td><td class="num">${dMY(S.setup.fye)}</td></tr>
+      </table>
+      <p class="text-[11.5px] text-mut mt-3">Companies with an approved EA2 exemption may instead file the simpler <span class="mono">KFI-${S.setup.framework === 'MPERS' ? 'MPERS' : 'MFRS'}</span> entry point — the KFI sheet in the download covers that case too.</p>
+    </div>
+  </div>`;
+}
+
 /* export / import */
 function tkData(el) {
   el.innerHTML = `
