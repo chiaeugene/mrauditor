@@ -171,23 +171,32 @@ tailwind.config = {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/><path d="M8.5 11l1.8 1.8 3.2-3.6"/></svg>
         <span>4 · Audit Engine</span>
       </div>
+      <div class="navlink" data-scr="wps">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M9 12h6M9 16h4"/></svg>
+        <span>5 · Audit File (WPs)</span>
+        <span id="nav-wp-count" class="ml-auto text-[10px] bg-white/10 rounded-full px-1.5 py-0.5"></span>
+      </div>
       <div class="navlink" data-scr="fs">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h8M8 9h2"/></svg>
-        <span>5 · Financial Statements</span>
+        <span>6 · Financial Statements</span>
       </div>
       <div class="navlink" data-scr="tax">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 15l8-8"/><circle cx="9" cy="9" r="1.2"/><circle cx="15" cy="15" r="1.2"/></svg>
-        <span>6 · Tax Computation</span>
+        <span>7 · Tax Computation</span>
       </div>
       <div class="navlink" data-scr="reports">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15l2 2 4-4"/><path d="M20 8v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2h8l6 6z"/></svg>
-        <span>7 · Reports &amp; Sign-off</span>
+        <span>8 · Reports &amp; Sign-off</span>
       </div>
       <div class="navlink" data-scr="pack">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 016.5 22H20V7l-5-5H6.5A2.5 2.5 0 004 4.5z"/><path d="M15 2v5h5"/><path d="M8 13h8M8 17h5"/></svg>
-        <span>8 · Full Audit Pack</span>
+        <span>9 · Full Audit Pack</span>
       </div>
       <div class="text-[10px] font-semibold uppercase tracking-wider text-white/35 px-3 pt-4 pb-1">Tools &amp; reference</div>
+      <div class="navlink" data-scr="defence">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/><path d="M9 12h6M12 9v6"/></svg>
+        <span>Defence &amp; Positions (AI)</span>
+      </div>
       <div class="navlink" data-scr="toolkit">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4.5 4.5 0 00-6.4 6.4L3 18v3h3l5.3-5.3a4.5 4.5 0 006.4-6.4L14 13l-3-3 3.7-3.7z"/></svg>
         <span>Auditor Toolkit</span>
@@ -512,8 +521,12 @@ tailwind.config = {
             <h2 class="font-bold text-[15px] mb-2">Paste from Excel / accounting system</h2>
             <p class="text-[12px] text-mut mb-2">Ask the client to export the <strong>trial balance</strong> from their accounting software (SQL Account, AutoCount, UBS, Million, QuickBooks, Xero — they all export to Excel). Open it, copy the rows, paste here. Columns: <span class="mono">Account, Debit, Credit</span> and optionally <span class="mono">Prior year</span>. Signed single-amount format (<span class="mono">Account, Amount</span>, credits negative) also works. Mr Auditor auto-classifies every line — the rest of the audit generates itself from this.</p>
             <textarea class="field mono !text-[12px]" id="tb-paste" rows="8" placeholder="Sales&#9;&#9;4850000&#10;Trade receivables&#9;1650000&#10;..."></textarea>
-            <div class="flex gap-2 mt-2">
+            <div class="flex gap-2 mt-2 flex-wrap">
               <button class="btn btn-pri" onclick="importPaste()">Import &amp; classify</button>
+              <label class="btn btn-ghost cursor-pointer">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>
+                Import .xlsx / .csv file<input type="file" accept=".xlsx,.xls,.csv" class="hidden" onchange="importXlsx(this)">
+              </label>
               <button class="btn btn-ghost" onclick="document.getElementById('tb-paste').value=''">Clear box</button>
             </div>
             <div id="paste-result" class="mt-2 text-[12px]"></div>
@@ -712,6 +725,46 @@ tailwind.config = {
       <div class="card card-pad rep-doc !max-w-none" id="pack-render"></div>
     </section>
 
+    <!-- ================= AUDIT FILE (WORKING PAPERS) ================= -->
+    <section class="screen" id="scr-wps">
+      <div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
+        <div class="lg:col-span-1">
+          <div class="card card-pad !p-3 lg:sticky lg:top-20 max-h-[80vh] overflow-y-auto no-print">
+            <div class="flex items-center justify-between px-1 mb-2">
+              <h2 class="font-bold text-[14px]">Audit file index</h2>
+              <span id="wp-progress" class="pill pill-info"></span>
+            </div>
+            <div id="wp-index" class="space-y-0.5 text-[13px]"></div>
+          </div>
+        </div>
+        <div class="lg:col-span-3">
+          <div class="flex flex-wrap items-center gap-2 mb-3 no-print">
+            <div id="wp-crumb" class="text-[13px] text-mut"></div>
+            <button class="btn btn-ghost ml-auto" onclick="printSection('wp-render')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
+              Print / PDF this paper
+            </button>
+          </div>
+          <div class="card card-pad" id="wp-render"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= DEFENCE & POSITIONS (AI) ================= -->
+    <section class="screen" id="scr-defence">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div>
+          <h2 class="font-bold text-[17px]">Defence &amp; positions</h2>
+          <p class="text-[13px] text-mut max-w-2xl">For every significant judgement in this file, Mr Auditor drafts the position paper: the argument for the treatment, the challenges MIA practice review or LHDN would raise, and the prepared rebuttals — so the firm walks into any query already armed.</p>
+        </div>
+        <button class="btn btn-pri" onclick="defenceCrossExam()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 015.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
+          Cross-examine my file
+        </button>
+      </div>
+      <div id="defence-list" class="grid grid-cols-1 lg:grid-cols-2 gap-4"></div>
+    </section>
+
     <!-- ================= REFERENCE ================= -->
     <section class="screen" id="scr-ref">
       <div id="ref-render" class="grid grid-cols-1 lg:grid-cols-2 gap-4"></div>
@@ -741,6 +794,7 @@ tailwind.config = {
 <div id="toast" class="fixed bottom-5 right-5 z-50 hidden px-4 py-2.5 rounded-xl bg-ink text-white text-[13px] font-medium shadow-lg"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -34,6 +34,10 @@ const BLANK = () => ({
   intake: {},             // registration-wizard audit profile
   caAssets: [],           // capital allowance schedule rows
   bankin: {},             // bank-in reconciliation inputs
+  plan: {},               // planning-paper answers: materiality questionnaire, risk notes, checklists
+  wpSign: {},             // per-working-paper sign-off { ref: {prep, prepDate, rev, revDate, concl} }
+  samples: {},            // per-area sampling & testing { ref: {pop, keyAmt, risk, rows:[...]} }
+  defence: [],            // AI position papers [{topic, title, text, ts}]
   repTab: 'auditor'
 });
 /* real UUIDs so engagement/file ids are valid Postgres uuid values once synced to Supabase */
@@ -549,8 +553,9 @@ function deadlinesHTML() {
 
 /* ---------- navigation ---------- */
 const TITLES = { home:'Mr Auditor', register:'Register a company', dashboard:'Dashboard', setup:'Engagement Setup', tb:'Trial Balance',
-  audit:'Audit Engine', fs:'Financial Statements', tax:'Tax Computation',
-  reports:'Reports & Sign-off', pack:'Full Audit Pack', vault:'Evidence Vault', toolkit:'Auditor Toolkit', ref:'Regulatory Compass' };
+  audit:'Audit Engine', wps:'Audit File — Working Papers', fs:'Financial Statements', tax:'Tax Computation',
+  reports:'Reports & Sign-off', pack:'Full Audit Pack', vault:'Evidence Vault', toolkit:'Auditor Toolkit',
+  defence:'Defence & Positions', ref:'Regulatory Compass' };
 let current = 'dashboard';
 function show(scr) {
   current = scr;
@@ -570,7 +575,8 @@ function closeNav(){ $('mobile-nav').classList.add('-translate-x-full'); $('nav-
 function render(scr = current) {
   updateTop();
   ({ home:renderHome, register:renderRegister, dashboard:renderDashboard, setup:renderSetup, tb:renderTB, audit:renderAudit,
-     fs:renderFS, tax:renderTax, reports:renderReports, pack:renderPack, vault:renderVault, toolkit:renderToolkit, ref:renderRef }[scr])();
+     wps:renderWps, fs:renderFS, tax:renderTax, reports:renderReports, pack:renderPack, vault:renderVault,
+     toolkit:renderToolkit, defence:renderDefence, ref:renderRef }[scr])();
 }
 function updateTop() {
   $('top-sub').textContent = S.setup.name
@@ -621,11 +627,13 @@ function renderDashboard() {
       sub: has ? `${S.tb.length} accounts · ${Math.abs(t.diff)<=0.5?'balanced':'OUT OF BALANCE ' + fmtRM(t.diff)}` : 'paste from Excel / accounting system' },
     { n:4, lbl:'Audit engine run — findings cleared', done: has && ev.open.filter(f=>['blocker','high'].includes(f.sev)).length===0, scr:'audit',
       sub: has ? `${ev.open.length} open finding(s), ${S.adjustments.length} adjustment(s) posted` : 'materiality, analytics, smart checks' },
-    { n:5, lbl:'Financial statements generated', done: has && Math.abs(model().balGap)<=1, scr:'fs',
+    { n:5, lbl:'Audit file — planning & working papers', done: !!(S.plan.mat && S.plan.mat.applied) && Object.keys(S.wpSign).length >= 3, scr:'wps',
+      sub: S.plan.mat && S.plan.mat.applied ? `materiality documented · ${Object.keys(S.wpSign).length} paper(s) signed` : 'materiality questionnaire, risk & scoping, lead schedules' },
+    { n:6, lbl:'Financial statements generated', done: has && Math.abs(model().balGap)<=1, scr:'fs',
       sub: has ? (Math.abs(model().balGap)<=1 ? 'SOFP articulates' : `SOFP gap ${fmtRM(model().balGap)}`) : 'MPERS-format FS' },
-    { n:6, lbl:'Tax computation prepared', done: has && (num(S.tax.ca)>0 || num(S.tax.cp204)>0 || S.tax._touched), scr:'tax',
+    { n:7, lbl:'Tax computation prepared', done: has && (num(S.tax.ca)>0 || num(S.tax.cp204)>0 || S.tax._touched), scr:'tax',
       sub:'SME tiers 15% / 17% / 24% · Sch 3 capital allowances' },
-    { n:7, lbl:'Reports ready for licensed auditor', done: !!(S.sign.partner && S.sign.firm), scr:'reports',
+    { n:8, lbl:'Reports ready for licensed auditor', done: !!(S.sign.partner && S.sign.firm), scr:'reports',
       sub: S.sign.partner ? `${S.sign.partner}, ${S.sign.firm}` : 'auditor’s report, directors’ report, statutory declaration' }
   ];
   const doneCt = steps.filter(s=>s.done).length;
@@ -769,20 +777,18 @@ function addTbRow(){ S.tb.push({id:nid(), name:'', cat:'ADMIN', dr:'', cr:'', py
 function clearTb(){ if (!S.tb.length || confirm('Remove all trial balance rows and posted adjustments?'))
   { S.tb = []; S.adjustments = []; S.findingStatus = {}; renderTB(); saveState(); } }
 
-function importPaste() {
-  const raw = $('tb-paste').value.trim();
-  if (!raw) { toast('Nothing to import'); return; }
-  const lines = raw.split(/\r?\n/).filter(l => l.trim());
+/* Shared TB import core: takes an array of cell-arrays [name, n1, n2, n3] */
+function importRows(rowArrays) {
   let added = 0, skipped = 0;
-  for (const line of lines) {
-    const parts = line.split(/\t|;|,(?=(?:[^"]*"[^"]*")*[^"]*$)/).map(p => p.replace(/^"|"$/g,'').trim());
-    if (parts.length < 2) { skipped++; continue; }
-    const name = parts[0];
+  for (const parts of rowArrays) {
+    if (!parts || parts.length < 2) { skipped++; continue; }
+    const name = String(parts[0] ?? '').trim();
     if (!name || /^(account|description|particulars|debit|dr\b)/i.test(name) && parts.length <= 2) { skipped++; continue; }
     const nums = parts.slice(1).map(num);
     let dr = 0, cr = 0, py = '';
-    if (parts.length === 2) { const v = nums[0]; if (v >= 0) dr = v; else cr = -v; }
-    else { dr = nums[0] || 0; cr = nums[1] || 0; py = nums[2] || ''; }
+    if (parts.length === 2 || (nums[1] === 0 && nums[2] === 0 && parts.length === 2)) {
+      const v = nums[0]; if (v >= 0) dr = v; else cr = -v;
+    } else { dr = nums[0] || 0; cr = nums[1] || 0; py = nums[2] || ''; }
     if (!dr && !cr && !py) { skipped++; continue; }
     if (/total/i.test(name)) { skipped++; continue; }
     const cat = classify(name, dr, cr);
@@ -793,6 +799,31 @@ function importPaste() {
   $('paste-result').innerHTML = `<span class="pill pill-ok">${added} imported</span> ${skipped?`<span class="pill pill-mut ml-1">${skipped} skipped</span>`:''}`;
   renderTB(); saveState();
   toast(`${added} accounts imported and classified`);
+  return added;
+}
+function importPaste() {
+  const raw = $('tb-paste').value.trim();
+  if (!raw) { toast('Nothing to import'); return; }
+  const rowArrays = raw.split(/\r?\n/).filter(l => l.trim()).map(line =>
+    line.split(/\t|;|,(?=(?:[^"]*"[^"]*")*[^"]*$)/).map(p => p.replace(/^"|"$/g,'').trim()));
+  importRows(rowArrays);
+}
+function importXlsx(input) {
+  const f = input.files[0]; input.value = '';
+  if (!f) return;
+  if (typeof XLSX === 'undefined') { toast('Spreadsheet reader failed to load — paste instead'); return; }
+  const rd = new FileReader();
+  rd.onload = () => {
+    try {
+      const wb = XLSX.read(rd.result, { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rowArrays = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '' })
+        .filter(r => r.some(c => String(c).trim() !== ''));
+      if (!rowArrays.length) { toast('No rows found in that file'); return; }
+      importRows(rowArrays);
+    } catch (e) { toast('Could not read that file: ' + e.message); }
+  };
+  rd.readAsArrayBuffer(f);
 }
 
 /* ---------- audit engine ---------- */
@@ -1974,6 +2005,8 @@ function aiContext() {
 }
 function aiFormat(t) {
   return esc(t)
+    .replace(/^#{1,3} (.*)$/gm, '<span class="block font-bold text-[14px] mt-2">$1</span>')
+    .replace(/^---+$/gm, '<span class="block border-t border-line my-1"></span>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/^- (.*)$/gm, '<span class="block pl-3">• $1</span>')
     .replace(/\n\n/g, '<br><br>').replace(/\n/g, '<br>');
@@ -2496,6 +2529,656 @@ function tkImport(input) {
   rd.readAsText(f);
 }
 
+/* ============================================================
+   AUDIT FILE — WORKING PAPERS
+   The digital equivalent of the auditor's Excel workbook:
+   A-series planning papers, B-series completion papers, and
+   lettered lead schedules (C–Q) that wire TB → WP → FS → notes.
+   ============================================================ */
+const WP_PLAN = [
+  ['A1','Acceptance & independence','MIA By-Laws · ISA 210/220'],
+  ['A2','Materiality','ISA 320'],
+  ['A3','Risk assessment & scoping','ISA 315'],
+  ['A4','Preliminary analytical review','ISA 520'],
+  ['A5','Audit strategy memorandum','ISA 300'],
+  ['A6','Fraud risk assessment','ISA 240'],
+  ['A7','Going concern — planning','ISA 570'],
+  ['A8','Laws & regulations','ISA 250'],
+  ['A9','Related parties — planning','ISA 550'],
+];
+const WP_COMPL = [
+  ['B1','Final analytical review','ISA 520'],
+  ['B2','Misstatement evaluation','ISA 450'],
+  ['B3','Subsequent events','ISA 560'],
+  ['B4','Going concern — conclusion','ISA 570'],
+  ['B5','Management representation letter','ISA 580'],
+  ['B6','Completion checklist','ISQM 1 · ISA 230'],
+  ['B7','Partner review notes','ISA 220'],
+];
+const WP_AREAS = [
+  ['C','Cash & bank',['CASH','FD'],'Bank statements & confirmations'],
+  ['D','Trade & other receivables',['TR','OR'],'Sales & receivables evidence'],
+  ['E','Inventories',['INV'],'Inventory count sheets'],
+  ['F','PPE & intangibles',['PPE','ACCDEP','INTANG'],'Fixed asset register & invoices'],
+  ['G','Investments',['INVEST'],'Agreements & facility letters'],
+  ['H','Trade & other payables',['TP','OP'],'Purchases & payables evidence'],
+  ['J','Borrowings & hire purchase',['OD','BORR','HP'],'Agreements & facility letters'],
+  ['K','Taxation',['TAXEXP','TAXPAY','DEFTAX'],'Tax — CP204 / Form C / assessments'],
+  ['L','Equity',['SC','RE','DIV'],'SSM & statutory records'],
+  ['M','Related parties & directors',['DIRADV','DIROWE','RPTREC','RPTPAY'],'SSM & statutory records'],
+  ['N','Revenue',['REV'],'Sales & receivables evidence'],
+  ['O','Cost of sales',['COS'],'Purchases & payables evidence'],
+  ['P','Operating expenses',['ADMIN','SELL','DEPR'],'Payroll · EPF · SOCSO'],
+  ['Q','Other income & finance costs',['OTHINC','FIN'],'Bank statements & confirmations'],
+];
+const WP_FINDING_CATS = { 'dir-adv':['DIRADV'], 'no-depr':['PPE','ACCDEP','DEPR'], 'accdep-exceeds':['PPE','ACCDEP'],
+  'neg-cash':['CASH','OD'], 'rec-days':['TR','REV'], 'inv-days':['INV','COS'], 'neg-gp':['REV','COS'], 'gp-swing':['REV','COS'],
+  'rpt-disc':['RPTREC','RPTPAY','DIROWE','DIRADV'], 'no-interest':['BORR','HP','OD','FIN'], 'interest-no-loan':['FIN'],
+  'fd-no-int':['FD'], 'no-epf':['ADMIN','OP'], 'suspense':['SUSP'], 'illegal-div':['DIV','RE'], 'neg-equity':['SC','RE'],
+  'sst':['REV'], 'einvoice':['REV'] };
+
+let curWp = 'A2';
+/* dotted-path state helpers so every paper input persists with one attribute */
+function wpGet(path, dflt) { let o = S; for (const k of path.split('.')) { if (o == null) return dflt; o = o[k]; } return o == null ? dflt : o; }
+function wpSet(path, val) {
+  const seg = path.split('.'); let o = S;
+  for (let i = 0; i < seg.length - 1; i++) { if (typeof o[seg[i]] !== 'object' || o[seg[i]] == null) o[seg[i]] = {}; o = o[seg[i]]; }
+  o[seg[seg.length - 1]] = val;
+  saveState(); wpIndexRefresh();
+}
+function wpStatus(ref) {
+  const s = (S.wpSign || {})[ref] || {};
+  return s.rev ? 'rev' : s.prep ? 'prep' : 'none';
+}
+function wpAreaFigures(cats) {
+  const m = S.tb.length ? model() : null;
+  if (!m) return { rows: [], tot: 0, totPy: 0, gross: 0 };
+  const rows = S.tb.filter(r => cats.includes(r.cat)).map(r => {
+    const cy = (num(r.dr) - num(r.cr)) * CAT[r.cat].side, py = num(r.py);
+    return { name: r.name, cat: r.cat, cy, py, mv: py ? (cy - py) / Math.abs(py) * 100 : null };
+  });
+  // include category-level audit adjustments so the WP ties to the adjusted TB / FS
+  const adj = {};
+  for (const a of S.adjustments) for (const e of a.entries) if (cats.includes(e.cat)) adj[e.cat] = (adj[e.cat] || 0) + e.amt * CAT[e.cat].side;
+  for (const [cat, amt] of Object.entries(adj)) rows.push({ name: CAT[cat].label + ' (audit adjustments)', cat, cy: amt, py: 0, mv: null, isAdj: true });
+  const tot = rows.reduce((s, r) => s + r.cy, 0), totPy = rows.reduce((s, r) => s + r.py, 0);
+  const gross = rows.reduce((s, r) => s + Math.abs(r.cy), 0);
+  return { rows, tot, totPy, gross };
+}
+function wpAreaRisk(ref, cats, gross) {
+  const mat = materiality();
+  const ev = S.tb.length ? evaluate() : { open: [] };
+  const hits = ev.open.filter(f => (WP_FINDING_CATS[f.id] || []).includes(cats[0]) || (WP_FINDING_CATS[f.id] || []).some(c => cats.includes(c)));
+  const level = hits.some(f => ['blocker','high'].includes(f.sev)) ? 'high'
+    : (hits.some(f => f.sev === 'medium') || gross >= mat.pm) ? 'medium' : 'low';
+  return { level, hits, abovePM: gross >= mat.pm };
+}
+/* shared paper chrome: header + body + conclusion/sign-off */
+function wpChrome(ref, title, isa, body) {
+  const s = (S.wpSign || {})[ref] || {};
+  return `
+  <div class="fs-doc">
+    <div class="flex items-start justify-between flex-wrap gap-2 border-b border-line pb-3 mb-4">
+      <div>
+        <div class="font-bold text-[16px]">${esc(S.setup.name) || '[Client]'} — ${title}</div>
+        <div class="text-[12px] text-mut">FYE ${dMY(S.setup.fye)} · ${isa} · Prepared by Mr Auditor engine, reviewed by the engagement team</div>
+      </div>
+      <span class="pill pill-mut mono !text-[13px]">${ref}</span>
+    </div>
+    ${body}
+    <div class="mt-6 border-t border-line pt-4">
+      <label class="fieldlbl">Conclusion</label>
+      <textarea class="field !text-[13px]" rows="2" placeholder="e.g. Work performed as planned; balance fairly stated subject to the matters referred to the partner."
+        onchange="wpSet('wpSign.${ref}.concl', this.value)">${esc(s.concl || '')}</textarea>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
+        <div><label class="fieldlbl">Prepared by</label><input class="field !py-1.5" value="${esc(s.prep || '')}" onchange="wpSet('wpSign.${ref}.prep', this.value)"></div>
+        <div><label class="fieldlbl">Date</label><input class="field mono !py-1.5" type="date" value="${esc(s.prepDate || '')}" onchange="wpSet('wpSign.${ref}.prepDate', this.value)"></div>
+        <div><label class="fieldlbl">Reviewed by</label><input class="field !py-1.5" value="${esc(s.rev || '')}" onchange="wpSet('wpSign.${ref}.rev', this.value)"></div>
+        <div><label class="fieldlbl">Date</label><input class="field mono !py-1.5" type="date" value="${esc(s.revDate || '')}" onchange="wpSet('wpSign.${ref}.revDate', this.value)"></div>
+      </div>
+    </div>
+  </div>`;
+}
+function wpChecklist(ref, items) {
+  return items.map((it, i) => {
+    const on = wpGet(`plan.checks.${ref}.${i}`, false);
+    return `<label class="flex items-start gap-2 py-1 text-[13px] cursor-pointer">
+      <input type="checkbox" class="mt-0.5" ${on ? 'checked' : ''} onchange="wpSet('plan.checks.${ref}.${i}', this.checked)">
+      <span>${it}</span></label>`;
+  }).join('');
+}
+function wpNotes(path, placeholder) {
+  return `<label class="fieldlbl mt-3">Notes</label>
+  <textarea class="field !text-[13px]" rows="3" placeholder="${placeholder || 'Auditor notes…'}" onchange="wpSet('${path}', this.value)">${esc(wpGet(path, ''))}</textarea>`;
+}
+function wpRatioTable() {
+  const m = S.tb.length ? model() : null;
+  if (!m) return '<p class="text-mut text-[13px]">Import a trial balance first.</p>';
+  const mp = hasPY() ? model(true) : null;
+  const R = [];
+  const push = (l, cy, py, read) => R.push([l, cy, py, read]);
+  const gp = m.revenue ? m.gp / m.revenue * 100 : NaN;
+  push('Gross margin', pct(gp), mp && mp.revenue ? pct(mp.gp / mp.revenue * 100) : '–', gp < 0 ? 'Investigate — below cost' : 'Compare to industry norm');
+  const np = m.revenue ? m.pbt / m.revenue * 100 : NaN;
+  push('PBT margin', pct(np), mp && mp.revenue ? pct(mp.pbt / mp.revenue * 100) : '–', np < 0 ? 'Loss-making' : '');
+  const cr = m.clSimple ? m.ca / m.clSimple : NaN;
+  push('Current ratio', isFinite(cr) ? cr.toFixed(2) + '×' : '–', mp && mp.clSimple ? (mp.ca / mp.clSimple).toFixed(2) + '×' : '–', cr < 1 ? 'Net current liabilities' : '');
+  const rd = m.revenue ? m.nat.TR / m.revenue * 365 : NaN;
+  push('Receivable days', isFinite(rd) ? Math.round(rd) + 'd' : '–', mp && mp.revenue ? Math.round(mp.nat.TR / mp.revenue * 365) + 'd' : '–', rd > 120 ? 'Impairment risk' : '');
+  const pd = m.cos ? m.nat.TP / m.cos * 365 : NaN;
+  push('Payable days', isFinite(pd) ? Math.round(pd) + 'd' : '–', mp && mp.cos ? Math.round(mp.nat.TP / mp.cos * 365) + 'd' : '–', '');
+  const idays = m.cos ? m.nat.INV / m.cos * 365 : NaN;
+  if (m.nat.INV) push('Inventory days', isFinite(idays) ? Math.round(idays) + 'd' : '–', mp && mp.cos ? Math.round(mp.nat.INV / mp.cos * 365) + 'd' : '–', idays > 180 ? 'NRV testing' : '');
+  const debt = m.nat.BORR + m.nat.HP + m.nat.OD;
+  push('Gearing (debt÷equity)', m.equity > 0 ? (debt / m.equity).toFixed(2) + '×' : debt > 0 ? '∞' : '–', mp && mp.equity > 0 ? ((mp.nat.BORR + mp.nat.HP + mp.nat.OD) / mp.equity).toFixed(2) + '×' : '–', '');
+  return `<table class="tbl"><thead><tr><th>Indicator</th><th class="num">CY</th><th class="num">PY</th><th>Auditor's reading</th></tr></thead>
+    <tbody>${R.map(r => `<tr><td>${r[0]}</td><td class="num mono">${r[1]}</td><td class="num mono text-mut">${r[2]}</td><td class="text-[12px] text-mut">${r[3]}</td></tr>`).join('')}</tbody></table>`;
+}
+
+/* ---------- planning papers ---------- */
+function wpA1() {
+  const i = S.intake || {};
+  return wpChrome('A1', 'Acceptance & independence', 'MIA By-Laws · ISA 210/220', `
+    <p class="text-[13px] text-mut mb-3">Engagement acceptance/continuance and ethical clearance — the paper practice reviewers open first.</p>
+    <table class="tbl mb-3"><tbody>
+      <tr><td class="text-mut">First audit?</td><td>${S.setup.firstaudit === 'yes' ? '<span class="pill pill-warn">Yes — ISA 510 opening balance work required</span>' : 'No — recurring engagement'}</td></tr>
+      <tr><td class="text-mut">Previous auditor</td><td>${esc(i.prevauditor) || '—'} ${i.prevauditor ? '<span class="pill pill-warn">professional clearance letter required</span>' : ''}</td></tr>
+      <tr><td class="text-mut">Bookkeeping condition (intake)</td><td>${esc(i.bookkeeping) || 'not assessed'}</td></tr>
+      <tr><td class="text-mut">Known risk notes (intake)</td><td>${esc(i.risknotes) || '—'}</td></tr>
+    </tbody></table>
+    ${wpChecklist('A1', [
+      'Client identity, beneficial owners and directors verified (SSM search on file; AMLA/CDD completed)',
+      'Independence assessed — no financial interest, family relationship or long-association threat (MIA By-Laws Part 4A / s.290)',
+      'Total fees from this client below the fee-dependency threshold of recurring practice income',
+      'Professional clearance received from the predecessor auditor (or N/A — recurring)',
+      'Firm has the competence, time and resources for this engagement (industry, size, deadline)',
+      'Engagement letter (ISA 210) issued and signed for this financial year',
+      'No management-integrity or scope-limitation red flags from prior years or the intake notes',
+    ])}
+    ${wpNotes('plan.notes.A1', 'Threats identified and safeguards applied…')}`);
+}
+function wpA2() {
+  const m = S.tb.length ? model() : null;
+  const q = wpGet('plan.mat', {});
+  const yn = (k, label, hint) => {
+    const v = wpGet(`plan.mat.${k}`, '');
+    return `<div class="flex items-start justify-between gap-3 py-2 border-b border-line/60">
+      <div class="text-[13px]">${label}${hint ? `<div class="text-[11.5px] text-mut">${hint}</div>` : ''}</div>
+      <div class="flex gap-1 flex-none">
+        <button class="btn ${v === 'y' ? 'btn-pri' : 'btn-ghost'} !py-1 !px-3 !text-[12px]" onclick="wpSet('plan.mat.${k}','y'); wpShow('A2')">Yes</button>
+        <button class="btn ${v === 'n' ? 'btn-pri' : 'btn-ghost'} !py-1 !px-3 !text-[12px]" onclick="wpSet('plan.mat.${k}','n'); wpShow('A2')">No</button>
+      </div></div>`;
+  };
+  // recommendation engine
+  let bench = 'revenue', benchWhy = 'a stable, understandable base for an owner-managed entity';
+  if (q.q3 === 'y' || (m && m.pbt <= 0)) { bench = q.q4 === 'y' ? 'assets' : 'revenue'; benchWhy = 'profit before tax is loss-making/marginal this year, so it is not a meaningful base'; }
+  else if (q.q4 === 'y') { bench = 'assets'; benchWhy = 'the entity is asset-intensive, so total assets best reflect its scale'; }
+  else if (q.q1 === 'y') { bench = 'pbt'; benchWhy = 'the entity is profit-oriented with stable earnings, so users focus on profit'; }
+  const pmPct = q.q5 === 'y' ? '0.6' : '0.75';
+  const benches = m ? { revenue: Math.max(Math.round(Math.abs(m.revenue) * .01), 1000), pbt: Math.max(Math.round(Math.abs(m.pbt) * .05), 1000), assets: Math.max(Math.round(Math.abs(m.totalAssets) * .015), 1000) } : null;
+  const benchLabel = { revenue: '1% of revenue', pbt: '5% of profit before tax', assets: '1.5% of total assets' }[bench];
+  const overall = benches ? benches[bench] : 0;
+  const rationale = `Benchmark selected: ${benchLabel}, because ${benchWhy}. The primary users of these financial statements are ${q.q2 === 'y' ? 'the owner-directors, their bankers and the tax authorities' : 'the members and other external users'}. Performance materiality set at ${Math.round(parseFloat(pmPct) * 100)}% of overall materiality${q.q5 === 'y' ? ' to reflect the elevated engagement risk identified at planning' : ' (normal risk)'}, with a clearly trivial threshold of 5%.`;
+  const applied = q.applied && S.audit.benchmark === bench && S.audit.pm === pmPct;
+  return wpChrome('A2', 'Materiality', 'ISA 320', `
+    <p class="text-[13px] text-mut mb-2">Answer the questions — the paper selects the benchmark <em>and</em> writes the rationale ISA 320 requires you to document.</p>
+    ${yn('q1', 'Is the entity profit-oriented with reasonably stable earnings?', m ? `This year's PBT: ${fmtRM(m.pbt)}` : '')}
+    ${yn('q2', 'Owner-managed, with bankers and LHDN as the main users of the accounts?', 'Typical Sdn Bhd profile')}
+    ${yn('q3', 'Is the entity loss-making or at marginal profitability this year?', m && m.revenue ? `PBT margin ${pct(m.pbt / m.revenue * 100)}` : '')}
+    ${yn('q4', 'Is the entity asset-intensive (property/investment holding)?', '')}
+    ${yn('q5', 'Elevated engagement risk? (first audit, weak records, significant findings)', S.tb.length ? `${evaluate().open.filter(f => ['blocker','high'].includes(f.sev)).length} high-risk finding(s) open` : '')}
+    <div class="mt-4 p-3 rounded-xl bg-indigosoft">
+      <div class="text-[12px] font-semibold text-indigo uppercase tracking-wide mb-1">Recommendation</div>
+      ${m ? `<table class="fs-doc" style="max-width:26rem">
+        <tr><td>Benchmark</td><td class="num">${benchLabel}</td></tr>
+        <tr><td>Overall materiality</td><td class="num mono">${fmtRM(overall)}</td></tr>
+        <tr><td>Performance materiality (${Math.round(parseFloat(pmPct) * 100)}%)</td><td class="num mono">${fmtRM(Math.round(overall * parseFloat(pmPct)))}</td></tr>
+        <tr><td>Clearly trivial (5%)</td><td class="num mono">${fmtRM(Math.round(overall * .05))}</td></tr>
+      </table>` : '<p class="text-[13px] text-mut">Import the trial balance to compute the figures.</p>'}
+      <p class="text-[12.5px] mt-2">${rationale}</p>
+      <button class="btn ${applied ? 'btn-mint' : 'btn-pri'} mt-2" onclick="wpSet('plan.mat.applied', true); wpSet('plan.mat.rationale', ${JSON.stringify(rationale).replace(/"/g, '&quot;')}); S.audit.benchmark='${bench}'; S.audit.pm='${pmPct}'; saveState(); wpShow('A2'); toast('Materiality applied to the engagement')">
+        ${applied ? '✓ Applied to the engagement' : 'Apply to the engagement'}</button>
+    </div>`);
+}
+function wpA3() {
+  const mat = materiality();
+  const rows = WP_AREAS.map(([ref, title, cats]) => {
+    const fig = wpAreaFigures(cats);
+    const risk = wpAreaRisk(ref, cats, fig.gross);
+    const approach = risk.abovePM || risk.level === 'high' ? 'Full substantive testing'
+      : risk.level === 'medium' ? 'Analytical review + targeted tests' : 'Analytical review only';
+    return `<tr>
+      <td class="mono">${ref}</td><td>${title}</td>
+      <td class="num mono">${fmt(fig.gross, true)}</td>
+      <td>${risk.abovePM ? '<span class="pill pill-warn">above PM</span>' : '<span class="pill pill-mut">below PM</span>'}</td>
+      <td><span class="pill ${risk.level === 'high' ? 'pill-risk' : risk.level === 'medium' ? 'pill-warn' : 'pill-ok'}">${risk.level}</span></td>
+      <td class="text-[12px]">${approach}</td>
+      <td><input class="field !py-1 !text-[12px]" placeholder="comment…" value="${esc(wpGet('plan.scope.' + ref, ''))}" onchange="wpSet('plan.scope.${ref}', this.value)"></td>
+    </tr>`;
+  }).join('');
+  const highs = S.tb.length ? evaluate().open.filter(f => ['blocker','high'].includes(f.sev)) : [];
+  return wpChrome('A3', 'Risk assessment & scoping', 'ISA 315', `
+    <p class="text-[13px] text-mut mb-3">Every area classified against performance materiality of <span class="mono font-semibold">${fmtRM(mat.pm)}</span>. Above PM = significant account = full testing. Controls reliance: none — fully substantive approach (typical owner-managed SME; controls not tested).</p>
+    <div class="overflow-x-auto"><table class="tbl min-w-[720px]">
+      <thead><tr><th>Ref</th><th>Area</th><th class="num">Gross balance</th><th>vs PM</th><th>Inherent risk</th><th>Audit approach</th><th>Auditor's comment</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <div class="mt-3 text-[13px]"><span class="font-semibold">Significant engagement risks:</span>
+      ${highs.length ? `<ul class="list-disc pl-5 mt-1 space-y-0.5">${highs.map(f => `<li>${f.title} <span class="text-mut">(${f.law})</span></li>`).join('')}</ul>` : ' none identified above the high-risk threshold.'}</div>
+    ${wpNotes('plan.notes.A3', 'Overall engagement risk, planned responses…')}`);
+}
+function wpA4() {
+  return wpChrome('A4', 'Preliminary analytical review', 'ISA 520', `
+    <p class="text-[13px] text-mut mb-3">Planning-stage analytics — identify where the numbers don't move as expected, and direct testing there.</p>
+    ${wpRatioTable()}
+    ${wpNotes('plan.notes.A4', 'Expectations vs actuals; unusual movements to follow up in fieldwork…')}`);
+}
+function wpA5() {
+  const ds = deadlines();
+  const mat = materiality();
+  const applied = wpGet('plan.mat.applied', false);
+  return wpChrome('A5', 'Audit strategy memorandum', 'ISA 300', `
+    <div class="text-[13px] space-y-2">
+      <p><strong>Entity.</strong> ${esc(S.setup.name)} — ${esc(S.setup.activity) || '[activity]'}, ${S.setup.framework} reporting, FYE ${dMY(S.setup.fye)}. ${esc((S.intake || {}).software) ? 'Records maintained on ' + esc(S.intake.software) + '.' : ''}</p>
+      <p><strong>Materiality.</strong> ${applied ? `Overall ${fmtRM(mat.overall)} (${mat.label}); PM ${fmtRM(mat.pm)} — rationale documented at A2.` : 'Not yet documented — complete A2 first.'}</p>
+      <p><strong>Approach.</strong> Fully substantive; no reliance on internal controls (owner-managed entity, limited segregation of duties). Significant accounts per the A3 scoping paper receive tests of detail with sampling per the lead schedules; remaining areas by analytical review.</p>
+      <p><strong>Timing.</strong> ${ds.length ? `FS to be circulated by ${dMY(ds[0].date)}; SSM lodgement by ${dMY(ds[1] ? ds[1].date : ds[0].date)}; Form e-C due ${ds[2] ? dMY(ds[2].date) : '—'}.` : 'Set the FYE to compute statutory deadlines.'}</p>
+      <p><strong>Team & review.</strong> ${S.sign.partner ? `Engagement partner ${esc(S.sign.partner)} (${esc(S.sign.firm)}).` : 'Engagement partner to be recorded on the Reports screen.'} All working papers reviewed before the report is signed; file assembled within 60 days of the report date.</p>
+    </div>
+    ${wpNotes('plan.notes.A5', 'Additional strategy considerations — experts needed, component work, prior-year issues brought forward…')}`);
+}
+function wpA6() {
+  const ev = S.tb.length ? evaluate() : { open: [] };
+  const flags = ev.open.filter(f => ['neg-gp', 'dir-adv', 'suspense', 'illegal-div', 'gp-swing'].includes(f.id));
+  return wpChrome('A6', 'Fraud risk assessment', 'ISA 240', `
+    <p class="text-[13px] text-mut mb-3">Two presumptions apply to every audit and cannot be rebutted lightly: fraud risk in revenue recognition, and management override of controls.</p>
+    <table class="tbl mb-3"><tbody>
+      <tr><td class="font-medium">Revenue recognition (presumed risk)</td><td class="text-[12.5px]">Response: cut-off testing either side of year end; bank-in completeness vs recorded takings; credit note review post year end.</td></tr>
+      <tr><td class="font-medium">Management override (mandatory)</td><td class="text-[12.5px]">Response: journal entry testing (unusual/late/round-sum entries), review of estimates for bias, rationale for unusual transactions.</td></tr>
+    </tbody></table>
+    ${flags.length ? `<div class="text-[13px] mb-2"><span class="font-semibold">Fraud risk indicators from this file:</span>
+      <ul class="list-disc pl-5 mt-1 space-y-0.5">${flags.map(f => `<li>${f.title}</li>`).join('')}</ul></div>` : ''}
+    ${wpChecklist('A6', [
+      'Engagement team discussion held on fraud susceptibility (ISA 240.15) — documented below',
+      'Incentives/pressures considered (owner remuneration, tax minimisation, bank covenants)',
+      'Opportunities considered (cash sales, weak segregation of duties, related-party channels)',
+      'Attitudes/rationalisations considered (management tone, prior-year adjustments history)',
+      'Journal entry testing scoped into fieldwork',
+    ])}
+    ${wpNotes('plan.notes.A6', 'Team discussion notes, identified fraud risks and responses…')}`);
+}
+function wpA7() {
+  const m = S.tb.length ? model() : null;
+  const ev = S.tb.length ? evaluate() : { gc: false };
+  const ind = [];
+  if (m && m.equity < 0) ind.push(`Negative shareholders' funds of ${fmtRM(m.equity)}`);
+  if (m && m.netCurrent < 0) ind.push(`Net current liabilities of ${fmtRM(-m.netCurrent)}`);
+  if (m && m.pbt < 0) ind.push(`Loss before tax of ${fmtRM(m.pbt)}`);
+  return wpChrome('A7', 'Going concern — planning', 'ISA 570', `
+    <div class="text-[13px] mb-3"><span class="font-semibold">Indicators from the numbers:</span>
+      ${ind.length ? `<ul class="list-disc pl-5 mt-1">${ind.map(x => `<li>${x}</li>`).join('')}</ul>` : ' none — equity positive, net current assets, profitable.'}
+      ${ev.gc ? '<div class="pill pill-warn mt-2">Engine flags going-concern uncertainty — extended procedures required</div>' : ''}</div>
+    ${wpChecklist('A7', [
+      'Management asked for its going-concern assessment covering ≥ 12 months from the report date',
+      'Cash-flow forecast to be obtained and stress-tested',
+      'Director/shareholder support letter planned (with assessment of the supporter’s capacity to pay)',
+      'Banking facilities: limits, expiry and covenant compliance to be confirmed',
+      'Post-year-end trading and collections to be reviewed',
+    ])}
+    ${wpNotes('plan.notes.A7', 'Preliminary assessment…')}`);
+}
+function wpA8() {
+  const ev = S.tb.length ? evaluate() : { open: [] };
+  const has = id => ev.open.some(f => f.id === id);
+  const laws = [
+    ['Companies Act 2016', 'Accounting records (s.245), FS circulation & lodgement (s.257–259), loans to directors (s.224/225), dividends (s.131)', has('dir-adv') || has('illegal-div')],
+    ['Income Tax Act 1967', 'Form e-C, CP204 estimates, s.140B deemed interest, record keeping', false],
+    ['Sales Tax / Service Tax Act 2018', 'Registration thresholds, SST-02 returns, service tax on F&B where applicable', has('sst')],
+    ['EPF Act 1991 / SOCSO Act 1969', 'Monthly statutory contributions for all employees', has('no-epf')],
+    ['LHDN e-Invoice mandate', 'MyInvois onboarding per turnover phase', has('einvoice')],
+    ['Licensing', 'Local authority business/premise licences (industry-specific)', false],
+  ];
+  return wpChrome('A8', 'Laws & regulations', 'ISA 250', `
+    <table class="tbl mb-3"><thead><tr><th>Law</th><th>Key obligations for this entity</th><th>Status</th></tr></thead>
+    <tbody>${laws.map(([l, o, flag]) => `<tr><td class="font-medium">${l}</td><td class="text-[12.5px]">${o}</td>
+      <td>${flag ? '<span class="pill pill-warn">finding raised</span>' : '<span class="pill pill-mut">no flag</span>'}</td></tr>`).join('')}</tbody></table>
+    ${wpChecklist('A8', [
+      'Management enquiry made on compliance with laws & regulations and any known breaches',
+      'Correspondence with regulators (LHDN, Customs, SSM, local authority) reviewed',
+      'Non-compliance identified is evaluated for FS impact (provisions, disclosures) and reporting obligations',
+    ])}
+    ${wpNotes('plan.notes.A8', '')}`);
+}
+function wpA9() {
+  const fig = wpAreaFigures(['DIRADV', 'DIROWE', 'RPTREC', 'RPTPAY']);
+  return wpChrome('A9', 'Related parties — planning', 'ISA 550 · MPERS s.33', `
+    ${fig.rows.length ? `<table class="tbl mb-3"><thead><tr><th>Balance</th><th class="num">CY</th><th class="num">PY</th></tr></thead>
+      <tbody>${fig.rows.map(r => `<tr><td>${esc(r.name)}</td><td class="num mono">${fmt(r.cy, true)}</td><td class="num mono text-mut">${fmt(r.py, true)}</td></tr>`).join('')}</tbody></table>`
+      : '<p class="text-[13px] text-mut mb-2">No related-party balances on the TB — completeness procedures still required.</p>'}
+    ${wpChecklist('A9', [
+      'Related parties identified: directors, shareholders and their close family; entities under common control (SSM searches)',
+      'Balances and transactions confirmed directly with the related parties',
+      'Terms established and disclosed (non-trade, unsecured, interest-free, repayable on demand — verify, don’t assume)',
+      'Legality of loans to directors assessed (s.224/225 CA 2016); s.140B deemed interest passed to the tax computation',
+      'Completeness: minutes, bank statements and contracts scanned for unrecorded related-party dealings',
+    ])}
+    ${wpNotes('plan.notes.A9', '')}`);
+}
+
+/* ---------- completion papers ---------- */
+function wpB1() {
+  return wpChrome('B1', 'Final analytical review', 'ISA 520', `
+    <p class="text-[13px] text-mut mb-3">Performed at completion on the adjusted figures — do the FS as a whole make sense against our knowledge of the business?</p>
+    ${wpRatioTable()}
+    ${wpNotes('plan.notes.B1', 'Final view: results are consistent with our understanding because…')}`);
+}
+function wpB2() {
+  if (!S.tb.length) return wpChrome('B2', 'Misstatement evaluation', 'ISA 450', '<p class="text-mut text-[13px]">Import a trial balance first.</p>');
+  const ev = evaluate();
+  return wpChrome('B2', 'Misstatement evaluation', 'ISA 450', `
+    <table class="fs-doc" style="max-width:30rem">
+      <tr><td>Overall materiality</td><td class="num mono">${fmtRM(ev.mat.overall)}</td></tr>
+      <tr><td>Uncorrected misstatements</td><td class="num mono">${fmtRM(ev.totalMis)}</td></tr>
+      <tr><td>Adjustments posted (corrected)</td><td class="num mono">${S.adjustments.length}</td></tr>
+    </table>
+    ${ev.uncorrected.length ? `<table class="tbl mt-3"><thead><tr><th>Uncorrected item</th><th class="num">Effect (RM)</th></tr></thead>
+      <tbody>${ev.uncorrected.map(f => `<tr><td>${f.title}</td><td class="num mono">${fmt(f.misstate)}</td></tr>`).join('')}</tbody></table>` : '<p class="text-[13px] text-ok mt-2">No uncorrected misstatements above the trivial threshold.</p>'}
+    <div class="mt-3 p-3 rounded-xl bg-indigosoft text-[13px]">
+      <span class="font-semibold">Effect on the opinion:</span> ${OPINION_LABEL[ev.opinion]}. ${ev.why}
+      ${ev.gc ? '<br><span class="font-semibold">Going concern:</span> material uncertainty indicators present — see B4.' : ''}
+    </div>
+    <p class="text-[12.5px] text-mut mt-2">Uncorrected misstatements to be communicated to those charged with governance and included in the representation letter (B5).</p>`);
+}
+function wpB3() {
+  return wpChrome('B3', 'Subsequent events', 'ISA 560', `
+    <div class="mb-2"><label class="fieldlbl">Review performed up to (date)</label>
+      <input class="field mono !w-48" type="date" value="${esc(wpGet('plan.seDate', ''))}" onchange="wpSet('plan.seDate', this.value)"></div>
+    ${wpChecklist('B3', [
+      'Post-year-end management accounts / bank statements reviewed',
+      'Board minutes and significant contracts after year end read',
+      'Receivable collections after year end traced (supports recoverability)',
+      'Inventory selling prices after year end support NRV',
+      'New litigation, claims or regulator correspondence enquired of management',
+      'New borrowings, defaults or covenant breaches after year end checked',
+      'Dividends declared after year end identified for disclosure',
+    ])}
+    ${wpNotes('plan.notes.B3', 'Events identified and their treatment (adjusting vs disclosure)…')}`);
+}
+function wpB4() {
+  const ev = S.tb.length ? evaluate() : { gc: false };
+  const v = wpGet('plan.gcConcl', '');
+  const opt = (val, label) => `<label class="flex items-center gap-2 py-1 text-[13px]">
+    <input type="radio" name="gcc" ${v === val ? 'checked' : ''} onchange="wpSet('plan.gcConcl','${val}'); ${val === 'mugc' ? "S.sign.goingconcern=true; saveState();" : val === 'ok' ? "S.sign.goingconcern=false; saveState();" : ''} wpShow('B4')"> ${label}</label>`;
+  return wpChrome('B4', 'Going concern — conclusion', 'ISA 570', `
+    <p class="text-[13px] mb-2">Engine assessment: ${ev.gc ? '<span class="pill pill-warn">material uncertainty indicators present</span>' : '<span class="pill pill-ok">no primary indicators</span>'} — see A7 for the planning-stage detail and evidence obtained.</p>
+    <div class="mb-2">
+      ${opt('ok', 'Going concern basis appropriate — no material uncertainty (unmodified report)')}
+      ${opt('mugc', 'Going concern basis appropriate — material uncertainty exists and is adequately disclosed (MUGC paragraph in the report — auto-ticked on the Reports screen)')}
+      ${opt('bad', 'Going concern basis NOT appropriate, or disclosure inadequate (qualified/adverse — partner decision)')}
+    </div>
+    ${wpNotes('plan.notes.B4', 'Evidence relied on: forecasts, support letters, facilities…')}`);
+}
+function wpB5() {
+  const d1 = S.directors[0] ? esc(S.directors[0].name) : '[Director]';
+  const fin = esc((S.intake || {}).finperson) || d1;
+  const m = S.tb.length ? model() : null;
+  const ev = S.tb.length ? evaluate() : null;
+  return wpChrome('B5', 'Management representation letter', 'ISA 580', `
+    <div class="rep-doc border border-line rounded-xl p-4" id="replet">
+      <p class="text-[12px] text-mut">[On ${esc(S.setup.name) || 'client'} letterhead]</p>
+      <p>${S.sign.date ? dMY(S.sign.date) : '[Date — same date as the auditor’s report]'}</p>
+      <p><strong>${esc(S.sign.firm) || '[Audit firm]'}</strong><br>Chartered Accountants</p>
+      <p>Dear Sirs,</p>
+      <p><strong>Representation letter — audit of the financial statements for the year ended ${dMY(S.setup.fye)}</strong></p>
+      <p>This letter is provided in connection with your audit of the financial statements of ${esc(S.setup.name)} for the year ended ${dMY(S.setup.fye)}. We confirm, to the best of our knowledge and belief, the following representations:</p>
+      <p>1. We have fulfilled our responsibilities for the preparation of financial statements that give a true and fair view in accordance with the ${S.setup.framework === 'MPERS' ? 'Malaysian Private Entities Reporting Standard' : 'Malaysian Financial Reporting Standards'} and the Companies Act 2016.</p>
+      <p>2. We have provided you with access to all information, records and personnel relevant to the audit, and all transactions have been recorded and are reflected in the financial statements.</p>
+      <p>3. Significant assumptions used in making accounting estimates are reasonable.</p>
+      <p>4. Related party relationships and transactions — including all balances with directors and entities under common control — have been disclosed to you and appropriately accounted for and disclosed.${m && (m.nat.DIRADV > 0 || m.nat.DIROWE > 0) ? ` The amount owing ${m.nat.DIRADV > 0 ? 'by' : 'to'} directors of ${fmtRM(m.nat.DIRADV || m.nat.DIROWE)} is unsecured, interest-free and repayable on demand.` : ''}</p>
+      <p>5. All events subsequent to the reporting date requiring adjustment or disclosure have been adjusted or disclosed.</p>
+      <p>6. We have disclosed to you all known instances of fraud, suspected fraud, or non-compliance with laws and regulations affecting the entity.</p>
+      <p>7. We have no plans or intentions that may materially affect the carrying value or classification of assets and liabilities.</p>
+      ${ev && ev.gc ? '<p>8. We confirm our assessment that the company remains a going concern, the feasibility of our plans to address the conditions creating doubt, and the completeness of the related disclosures. Undertakings of financial support obtained are within the capacity of the parties giving them.</p>' : ''}
+      ${ev && ev.uncorrected.length ? `<p>${ev.gc ? 9 : 8}. We believe the effects of uncorrected misstatements aggregating ${fmtRM(ev.totalMis)} are immaterial, individually and in aggregate, to the financial statements as a whole.</p>` : ''}
+      <p>Yours faithfully,</p>
+      <div class="mt-8 grid grid-cols-2 gap-10" style="max-width:34rem">
+        <div style="border-top:1px solid #1D1D1F; padding-top:.4rem"><strong>${d1}</strong><br>Director</div>
+        <div style="border-top:1px solid #1D1D1F; padding-top:.4rem"><strong>${fin}</strong><br>${fin === d1 ? 'Director' : 'Person responsible for financial management'}</div>
+      </div>
+    </div>
+    <p class="text-[12px] text-mut mt-2">Dated the same day as the auditor's report; signed before the report is released.</p>`);
+}
+function wpB6() {
+  return wpChrome('B6', 'Completion checklist', 'ISQM 1 · ISA 230', repChecklistHTML());
+}
+function wpB7() {
+  const notes = wpGet('plan.review', []);
+  return wpChrome('B7', 'Partner review notes', 'ISA 220', `
+    <div class="flex gap-2 mb-3">
+      <input class="field" id="rv-new" placeholder="New review point — e.g. obtain the FreshMart supplier statement reconciliation">
+      <button class="btn btn-pri flex-none" onclick="rvAdd()">Add</button>
+    </div>
+    ${notes.length ? notes.map((n, i) => `
+      <div class="flex items-center gap-2 py-1.5 border-b border-line/60 ${n.done ? 'opacity-60' : ''}">
+        <input type="checkbox" ${n.done ? 'checked' : ''} onchange="rvToggle(${i})">
+        <span class="text-[13px] flex-1 ${n.done ? 'line-through' : ''}">${esc(n.t)}</span>
+        <button class="btn btn-ghost !px-1.5 !py-1" onclick="rvDel(${i})" aria-label="Delete note">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#D70015" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+      </div>`).join('') : '<p class="text-[13px] text-mut">No open review points. The partner review must be evidenced before the report is signed.</p>'}`);
+}
+function rvAdd() { const v = $('rv-new').value.trim(); if (!v) return;
+  const arr = wpGet('plan.review', []); arr.push({ t: v, done: false }); wpSet('plan.review', arr); wpShow('B7'); }
+function rvToggle(i) { const arr = wpGet('plan.review', []); arr[i].done = !arr[i].done; wpSet('plan.review', arr); wpShow('B7'); }
+function rvDel(i) { const arr = wpGet('plan.review', []); arr.splice(i, 1); wpSet('plan.review', arr); wpShow('B7'); }
+
+/* ---------- lead schedules with sampling & testing ---------- */
+const SMP_FACTORS = { high: 3.0, medium: 2.31, low: 1.61 };
+function smpSet(ref, field, val) { if (!S.samples[ref]) S.samples[ref] = { rows: [] }; S.samples[ref][field] = val; saveState(); wpShow(ref); }
+function smpRowAdd(ref) { if (!S.samples[ref]) S.samples[ref] = { rows: [] }; (S.samples[ref].rows = S.samples[ref].rows || []).push({ item: '', amt: '', result: 'ok', note: '' }); saveState(); wpShow(ref); }
+function smpRowSet(ref, i, field, val) { S.samples[ref].rows[i][field] = val; saveState(); wpShow(ref); }
+function smpRowDel(ref, i) { S.samples[ref].rows.splice(i, 1); saveState(); wpShow(ref); }
+async function wpLead([ref, title, cats, evCat]) {
+  const fig = wpAreaFigures(cats);
+  const mat = materiality();
+  const risk = wpAreaRisk(ref, cats, fig.gross);
+  const smp = S.samples[ref] || { rows: [] };
+  const pop = num(smp.pop) || Math.round(fig.gross);
+  const keyAmt = num(smp.keyAmt) || 0;
+  const rlevel = smp.risk || risk.level;
+  const factor = SMP_FACTORS[rlevel] || 2.31;
+  const interval = mat.pm > 0 ? Math.round(mat.pm / factor) : 0;
+  const residual = Math.max(pop - keyAmt, 0);
+  const n = interval > 0 ? Math.ceil(residual / interval) : 0;
+  const rows = smp.rows || [];
+  const sampledAmt = rows.reduce((s, r) => s + num(r.amt), 0);
+  const excAmt = rows.filter(r => r.result === 'exception').reduce((s, r) => s + num(r.amt), 0);
+  const projected = sampledAmt > 0 ? Math.round(excAmt / sampledAmt * residual) : 0;
+  const kb = [...new Set(cats.flatMap(c => (KB[c] || { p: [] }).p))];
+  const asserts = [...new Set(cats.map(c => (KB[c] || {}).a).filter(Boolean))].join(' · ');
+  let evHTML = '<p class="text-[12.5px] text-mut">Sign in to see vault evidence.</p>';
+  try {
+    const files = (await vaultListRows(S.id)).filter(f => f.category === evCat);
+    evHTML = files.length ? files.map(f => `
+      <div class="flex items-center gap-2 py-1 text-[12.5px]">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#0071E3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
+        <button class="text-indigo hover:underline" onclick="vaultView('${f.id}')">${esc(f.file_name)}</button></div>`).join('')
+      : `<p class="text-[12.5px] text-warn">No evidence filed under “${evCat}” yet — <button class="text-indigo hover:underline" onclick="show('vault')">open the vault</button>.</p>`;
+  } catch (e) {}
+  return wpChrome(ref, title + ' — lead schedule', `ties to FS · assertions: ${asserts || '—'}`, `
+    <div class="flex flex-wrap gap-2 mb-3">
+      ${risk.abovePM ? '<span class="pill pill-warn">above PM — significant account</span>' : '<span class="pill pill-mut">below PM</span>'}
+      <span class="pill ${risk.level === 'high' ? 'pill-risk' : risk.level === 'medium' ? 'pill-warn' : 'pill-ok'}">inherent risk: ${risk.level}</span>
+      <span class="pill pill-info mono">PM ${fmtRM(mat.pm)}</span>
+    </div>
+    ${fig.rows.length ? `<table class="tbl mb-1"><thead><tr><th>GL account</th><th class="num">CY (RM)</th><th class="num">PY (RM)</th><th class="num">Mvmt</th></tr></thead>
+      <tbody>${fig.rows.map(r => `<tr class="${r.isAdj ? 'text-indigo' : ''}"><td>${esc(r.name)}</td><td class="num mono">${fmt(r.cy, true)}</td>
+        <td class="num mono text-mut">${fmt(r.py, true)}</td>
+        <td class="num mono ${r.mv !== null && Math.abs(r.mv) > 25 ? 'text-warn font-semibold' : ''}">${r.mv === null ? '–' : (r.mv > 0 ? '+' : '') + r.mv.toFixed(0) + '%'}</td></tr>`).join('')}
+      </tbody><tfoot><tr class="font-semibold"><td>Total — agrees to the financial statements</td><td class="num mono">${fmt(fig.tot, true)}</td><td class="num mono">${fmt(fig.totPy, true)}</td><td></td></tr></tfoot></table>
+      <p class="text-[11.5px] text-mut mb-3">Wired live from the adjusted trial balance — this total flows into the statements and the notes automatically, so the tie-out cannot break.</p>`
+      : '<p class="text-[13px] text-mut mb-3">No accounts classified to this area on the current TB.</p>'}
+    ${risk.hits.length ? `<div class="text-[13px] mb-3"><span class="font-semibold">Open findings on this area:</span>
+      <ul class="list-disc pl-5 mt-1">${risk.hits.map(f => `<li>${f.title} <span class="pill ${['blocker','high'].includes(f.sev) ? 'pill-risk' : f.sev === 'medium' ? 'pill-warn' : 'pill-info'}">${f.sev}</span></li>`).join('')}</ul></div>` : ''}
+    <div class="text-[13px] mb-3"><span class="font-semibold">Procedures for this area:</span>
+      <ul class="list-disc pl-5 mt-1 space-y-0.5 text-[12.5px]">${kb.map(p => `<li>${p}</li>`).join('') || '<li>Standard substantive procedures</li>'}</ul></div>
+    <div class="text-[13px] mb-4"><span class="font-semibold">Evidence on file (${evCat}):</span>${evHTML}</div>
+
+    <div class="border border-line rounded-xl p-3.5 mb-2">
+      <div class="font-semibold text-[13.5px] mb-1">Sampling & testing (monetary-unit method)</div>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-2">
+        <div><label class="fieldlbl">Population (RM)</label><input class="field mono !py-1.5" value="${smp.pop ? fmt(num(smp.pop)) : fmt(pop)}" onchange="smpSet('${ref}','pop',this.value)"></div>
+        <div><label class="fieldlbl">Key items ≥ interval, tested 100% (RM)</label><input class="field mono !py-1.5" value="${smp.keyAmt ? fmt(num(smp.keyAmt)) : ''}" placeholder="0" onchange="smpSet('${ref}','keyAmt',this.value)"></div>
+        <div><label class="fieldlbl">Risk (reliability factor)</label>
+          <select class="field !py-1.5" onchange="smpSet('${ref}','risk',this.value)">
+            <option value="high" ${rlevel === 'high' ? 'selected' : ''}>High (3.0)</option>
+            <option value="medium" ${rlevel === 'medium' ? 'selected' : ''}>Medium (2.31)</option>
+            <option value="low" ${rlevel === 'low' ? 'selected' : ''}>Low (1.61)</option>
+          </select></div>
+        <div><label class="fieldlbl">Computed</label>
+          <div class="text-[12.5px] mono pt-2">interval ${fmtRM(interval)}<br><span class="font-semibold">sample n = ${n}</span></div></div>
+      </div>
+      <table class="tbl"><thead><tr><th>Item tested (ref / description)</th><th class="num">Amount (RM)</th><th>Result</th><th>Note</th><th></th></tr></thead>
+      <tbody>${rows.map((r, i) => `<tr>
+        <td><input class="field !py-1 !text-[12px]" value="${esc(r.item)}" onchange="smpRowSet('${ref}',${i},'item',this.value)"></td>
+        <td class="num"><input class="field mono !py-1 !text-[12px] !text-right !w-28" value="${r.amt ? fmt(num(r.amt)) : ''}" onchange="smpRowSet('${ref}',${i},'amt',this.value)"></td>
+        <td><select class="field !py-1 !text-[12px] !w-28" onchange="smpRowSet('${ref}',${i},'result',this.value)">
+          <option value="ok" ${r.result !== 'exception' ? 'selected' : ''}>Agreed</option>
+          <option value="exception" ${r.result === 'exception' ? 'selected' : ''}>Exception</option></select></td>
+        <td><input class="field !py-1 !text-[12px]" value="${esc(r.note)}" onchange="smpRowSet('${ref}',${i},'note',this.value)"></td>
+        <td><button class="btn btn-ghost !px-1.5 !py-0.5" onclick="smpRowDel('${ref}',${i})" aria-label="Remove row">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#D70015" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button></td>
+      </tr>`).join('')}</tbody></table>
+      <div class="flex flex-wrap items-center gap-3 mt-2">
+        <button class="btn btn-ghost !py-1.5" onclick="smpRowAdd('${ref}')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> Add tested item</button>
+        <span class="text-[12.5px] mono ml-auto">tested ${fmtRM(sampledAmt)} · exceptions ${fmtRM(excAmt)}
+          ${excAmt > 0 ? ` · <span class="${projected > mat.pm ? 'text-risk' : 'text-warn'} font-semibold">projected misstatement ${fmtRM(projected)}</span>` : ''}</span>
+      </div>
+      ${projected > 0 ? `<p class="text-[12px] ${projected > mat.overall ? 'text-risk' : 'text-warn'} mt-1">Projected misstatement ${projected > mat.overall ? 'EXCEEDS overall materiality — extend testing or propose an adjustment (Audit Engine → AJE register)' : 'is below overall materiality — carry to the ISA 450 evaluation (B2) as an uncorrected item if not adjusted'}.</p>` : ''}
+    </div>`);
+}
+
+/* ---------- audit file screen ---------- */
+function wpIndexHTML() {
+  const dot = ref => { const st = wpStatus(ref);
+    return `<span class="inline-block w-2 h-2 rounded-full flex-none ${st === 'rev' ? 'bg-mint' : st === 'prep' ? 'bg-warn' : 'bg-line'}"></span>`; };
+  const item = (ref, title) => `
+    <div class="flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer ${curWp === ref ? 'bg-indigosoft text-indigo font-semibold' : 'hover:bg-paper'}" onclick="wpShow('${ref}')">
+      ${dot(ref)}<span class="mono text-[11px] w-6 flex-none">${ref}</span><span class="truncate">${title}</span></div>`;
+  const grp = label => `<div class="text-[10px] font-semibold uppercase tracking-wider text-mut px-2 pt-3 pb-1">${label}</div>`;
+  return grp('A · Planning') + WP_PLAN.map(([r, t]) => item(r, t)).join('')
+    + grp('Lead schedules') + WP_AREAS.map(([r, t]) => item(r, t)).join('')
+    + grp('B · Completion') + WP_COMPL.map(([r, t]) => item(r, t)).join('');
+}
+function wpIndexRefresh() {
+  const el = $('wp-index'); if (!el) return;
+  el.innerHTML = wpIndexHTML();
+  const total = WP_PLAN.length + WP_AREAS.length + WP_COMPL.length;
+  const signed = [...WP_PLAN, ...WP_AREAS, ...WP_COMPL].filter(([r]) => wpStatus(r) !== 'none').length;
+  const pg = $('wp-progress'); if (pg) pg.textContent = `${signed}/${total} signed`;
+  document.querySelectorAll('#nav-wp-count').forEach(e => e.textContent = signed || '');
+}
+async function wpShow(ref) {
+  curWp = ref;
+  wpIndexRefresh();
+  const all = [...WP_PLAN, ...WP_COMPL];
+  const meta = all.find(([r]) => r === ref);
+  const area = WP_AREAS.find(([r]) => r === ref);
+  $('wp-crumb').innerHTML = `Audit file → <span class="font-semibold text-ink">${ref} · ${meta ? meta[1] : area ? area[1] : ''}</span>`;
+  const fns = { A1: wpA1, A2: wpA2, A3: wpA3, A4: wpA4, A5: wpA5, A6: wpA6, A7: wpA7, A8: wpA8, A9: wpA9,
+    B1: wpB1, B2: wpB2, B3: wpB3, B4: wpB4, B5: wpB5, B6: wpB6, B7: wpB7 };
+  $('wp-render').innerHTML = '<div class="text-mut text-[13px]">Loading…</div>';
+  $('wp-render').innerHTML = area ? await wpLead(area) : fns[ref] ? fns[ref]() : '';
+}
+function renderWps() { wpIndexRefresh(); wpShow(curWp); }
+
+/* ============================================================
+   DEFENCE & POSITIONS — AI position papers + cross-examination
+   ============================================================ */
+async function aiRequest(question) {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) throw new Error('Sign in to use the AI');
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/ask-mr-auditor`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': SUPABASE_ANON_KEY },
+    body: JSON.stringify({ question, context: aiContext() }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.error) throw new Error(data.error || `AI service error (${res.status})`);
+  return data.answer || '';
+}
+function defenceTopics() {
+  const base = [
+    ['revenue', 'Revenue recognition & completeness'],
+    ['going-concern', 'Going concern assessment'],
+  ];
+  if (!S.tb.length) return base;
+  const map = { 'dir-adv': 'Director’s advances — legality & recoverability (s.224/225, s.140B)',
+    'no-depr': 'Depreciation estimate & PPE carrying value', 'neg-cash': 'Overdrawn bank reclassification',
+    'suspense': 'Suspense account treatment', 'rec-days': 'Receivables recoverability & impairment',
+    'inv-days': 'Inventory NRV', 'neg-gp': 'Negative margin & revenue completeness',
+    'illegal-div': 'Dividend legality (s.131/132 CA 2016)', 'sst': 'SST registration exposure',
+    'no-epf': 'EPF/SOCSO compliance exposure', 'neg-equity': 'Negative equity & solvency' };
+  for (const f of evaluate().open) if (map[f.id] && !base.some(x => x[0] === f.id)) base.push([f.id, map[f.id]]);
+  return base;
+}
+function renderDefence() {
+  const topics = defenceTopics();
+  const cross = S.defence.find(d => d.topic === 'cross-exam');
+  const card = (topic, title) => {
+    const paper = S.defence.find(d => d.topic === topic);
+    return `
+    <div class="card card-pad" id="defcard-${topic}">
+      <div class="flex items-start justify-between gap-2 mb-2">
+        <div class="font-semibold text-[14px]">${title}</div>
+        ${paper ? `<button class="btn btn-ghost !py-1 !px-2" onclick="printSection('def-${topic}')" title="Print">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><path d="M6 14h12v8H6z"/></svg></button>` : ''}
+      </div>
+      ${paper ? `<div class="text-[13px] leading-relaxed max-h-72 overflow-y-auto" id="def-${topic}">${aiFormat(paper.text)}</div>
+        <div class="flex items-center gap-2 mt-3">
+          <span class="text-[11px] text-mut">drafted ${new Date(paper.ts).toLocaleDateString('en-MY')}</span>
+          <button class="btn btn-ghost !py-1 !text-[12px] ml-auto" onclick="defenceGenerate('${topic}', ${JSON.stringify(title).replace(/"/g, '&quot;')})">Regenerate</button>
+        </div>`
+      : `<p class="text-[12.5px] text-mut mb-3">No position paper yet.</p>
+        <button class="btn btn-pri !py-1.5" onclick="defenceGenerate('${topic}', ${JSON.stringify(title).replace(/"/g, '&quot;')})">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.7L19.6 10l-5.7 1.9L12 17.6l-1.9-5.7L4.4 10l5.7-1.9z"/></svg>
+          Draft the position paper</button>`}
+    </div>`;
+  };
+  $('defence-list').innerHTML =
+    (cross ? `<div class="card card-pad lg:col-span-2" id="defcard-cross-exam">
+      <div class="flex items-start justify-between gap-2 mb-2">
+        <div class="font-semibold text-[14px]">Cross-examination — the reviewer's hardest questions</div>
+        <button class="btn btn-ghost !py-1 !px-2" onclick="printSection('def-cross-exam')" title="Print">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><path d="M6 14h12v8H6z"/></svg></button>
+      </div>
+      <div class="text-[13px] leading-relaxed" id="def-cross-exam">${aiFormat(cross.text)}</div>
+    </div>` : '') +
+    topics.map(([t, title]) => card(t, title)).join('');
+  staggerChildren('defence-list', 40);
+}
+async function defenceGenerate(topic, title) {
+  const el = $('defcard-' + topic);
+  if (el) el.innerHTML = `<div class="flex items-center gap-2"><span class="pill pill-info">Mr Auditor AI</span><span class="text-[12.5px] text-mut">drafting the position paper…</span></div>`;
+  try {
+    const answer = await aiRequest(`Draft a defence position paper for the audit judgement: "${title}" on this engagement. Structure it exactly as: **1. Our position** — the treatment taken in this file and its basis, citing the specific MPERS/ISA/CA 2016/ITA 1967 provisions and the actual figures from the engagement context. **2. Anticipated challenges** — the questions a MIA practice reviewer or LHDN officer would raise on this position. **3. Prepared responses** — the rebuttal to each challenge, pointing to the evidence and working papers this file should hold. Keep it tight and usable as a working paper.`);
+    S.defence = S.defence.filter(d => d.topic !== topic);
+    S.defence.push({ topic, title, text: answer, ts: Date.now() });
+    saveState();
+  } catch (e) { toast(e.message); }
+  renderDefence();
+}
+async function defenceCrossExam() {
+  const btnState = S.defence.find(d => d.topic === 'cross-exam');
+  toast(btnState ? 'Re-running the cross-examination…' : 'Cross-examining the file…');
+  try {
+    const answer = await aiRequest(`Act as a MIA practice reviewer performing a cold review of this audit file. Based on the engagement context, ask the 8 hardest questions you would put to the engagement partner — the ones most likely to expose weaknesses in this specific file. For each: state the question, why you are asking it (what the data suggests), and what a satisfactory answer must contain. Number them 1–8.`);
+    S.defence = S.defence.filter(d => d.topic !== 'cross-exam');
+    S.defence.push({ topic: 'cross-exam', title: 'Cross-examination', text: answer, ts: Date.now() });
+    saveState();
+  } catch (e) { toast(e.message); }
+  renderDefence();
+}
+
 /* ---------- reference ---------- */
 function renderRef() {
   const card = (title, body) => `<div class="card card-pad"><h2 class="font-bold text-[15px] mb-2">${title}</h2><div class="text-[13px] leading-relaxed space-y-2">${body}</div></div>`;
@@ -2559,6 +3242,8 @@ function hydrate(d) {
   c.setup = Object.assign(BLANK().setup, d.setup); c.tax = Object.assign(BLANK().tax, d.tax);
   c.sign = Object.assign(BLANK().sign, d.sign); c.audit = Object.assign(BLANK().audit, d.audit);
   c.notes = Object.assign({}, d.notes);
+  c.plan = Object.assign({}, d.plan); c.wpSign = Object.assign({}, d.wpSign);
+  c.samples = Object.assign({}, d.samples); c.defence = Array.isArray(d.defence) ? d.defence : [];
   return c;
 }
 
