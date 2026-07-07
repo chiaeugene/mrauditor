@@ -107,6 +107,26 @@ tailwind.config = {
 </head>
 <body class="font-sans antialiased">
 
+<!-- ============ PASSCODE GATE ============ -->
+<div id="gate" class="fixed inset-0 z-50 flex items-center justify-center bg-[#FBFBFD]">
+  <div class="aurora-bg" aria-hidden="true"><span></span><span></span><span></span></div>
+  <form id="gate-form" class="relative z-10 card card-pad w-[22rem] max-w-[90vw] text-center" onsubmit="return gateSubmit(event)">
+    <div class="w-14 h-14 rounded-2xl mx-auto mb-4 flex items-center justify-center" style="background:linear-gradient(135deg,#8B5CF6,#5A7CF0,#34D399)">
+      <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-5"/><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/></svg>
+    </div>
+    <h1 class="font-bold text-[19px] tracking-display">Mr Auditor</h1>
+    <p class="text-[13px] text-mut mt-1 mb-5">Enter the passcode to open this audit file.</p>
+    <input id="gate-input" type="password" inputmode="numeric" autocomplete="off" maxlength="12"
+      class="field text-center !text-[20px] mono tracking-[0.3em]" placeholder="••••••" autofocus>
+    <div id="gate-err" class="text-[12.5px] text-risk mt-2 hidden">Incorrect passcode — try again.</div>
+    <button type="submit" class="btn btn-pri w-full mt-4 !text-[15px]">Unlock</button>
+  </form>
+</div>
+<script>
+  // runs synchronously before the rest of the page is visible — no flash of the gate on repeat visits
+  try { if (localStorage.getItem('mr-auditor-unlocked') === '1') document.getElementById('gate').style.display = 'none'; } catch(e) {}
+</script>
+
 <div class="aurora-bg" aria-hidden="true"><span></span><span></span><span></span></div>
 
 <div class="flex min-h-screen relative z-10">

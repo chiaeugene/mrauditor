@@ -2554,6 +2554,22 @@ function loadDemo() {
   toast('Demo engagement loaded — Delta Precision Engineering Sdn. Bhd.');
 }
 
+/* ---------- passcode gate ---------- */
+const GATE_CODE = '130386';
+function gateSubmit(e) {
+  e.preventDefault();
+  const input = $('gate-input');
+  if (input.value.trim() === GATE_CODE) {
+    try { localStorage.setItem('mr-auditor-unlocked', '1'); } catch(err) {}
+    $('gate').style.display = 'none';
+  } else {
+    $('gate-err').classList.remove('hidden');
+    input.value = '';
+    input.focus();
+  }
+  return false;
+}
+
 /* ---------- boot ---------- */
 document.querySelectorAll('#sidenav .navlink').forEach(n => n.addEventListener('click', () => show(n.dataset.scr)));
 $('mobile-nav').innerHTML = document.querySelector('#sidenav').outerHTML.replace('id="sidenav"','id="sidenav-m"') ;
