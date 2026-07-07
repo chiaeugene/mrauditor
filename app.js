@@ -69,6 +69,48 @@ const addMonths = (iso, m) => { const d = new Date(iso+'T00:00:00'); const day =
   d.setMonth(d.getMonth()+m); if (d.getDate() !== day) d.setDate(0); return dISO(d); };
 const addDays = (iso, n) => { const d = new Date(iso+'T00:00:00'); d.setDate(d.getDate()+n); return dISO(d); };
 const daysTo = iso => Math.ceil((new Date(iso+'T00:00:00') - new Date(new Date().toDateString())) / 86400000);
+const reducedMotion = () => window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* count a KPI element up from 0 to its already-rendered value (skips if reduced motion) */
+function countUp(el, duration = 650) {
+  const end = el.textContent;
+  const m = end.match(/-?[\d,]+(\.\d+)?/);
+  if (!m || reducedMotion()) return;
+  const prefix = end.slice(0, m.index), suffix = end.slice(m.index + m[0].length);
+  const target = parseFloat(m[0].replace(/,/g,''));
+  if (!isFinite(target)) return;
+  const t0 = performance.now();
+  el.textContent = prefix + '0' + suffix;
+  requestAnimationFrame(function frame(t) {
+    const p = Math.min((t - t0) / duration, 1);
+    const eased = 1 - Math.pow(1 - p, 3);
+    const val = Math.round(target * eased);
+    el.textContent = prefix + val.toLocaleString('en-MY') + suffix;
+    if (p < 1) requestAnimationFrame(frame); else el.textContent = end;
+  });
+}
+function animateKpis(containerId) {
+  document.querySelectorAll(`#${containerId} .kpi-val`).forEach(el => countUp(el));
+}
+/* stagger a container's freshly-rendered children in on load */
+function staggerChildren(containerId, stepMs = 40) {
+  const box = $(containerId); if (!box) return;
+  [...box.children].forEach((el, i) => {
+    el.classList.add('stagger-in');
+    el.style.animationDelay = `${i * stepMs}ms`;
+  });
+}
+/* small icon + guidance empty state, for vault categories / findings / client lists */
+function emptyState(icon, title, sub = '') {
+  return `<div class="flex flex-col items-center justify-center text-center py-8 gap-2">
+    <div class="w-11 h-11 rounded-full bg-paper flex items-center justify-center text-mut">${icon}</div>
+    <div class="text-[13px] font-medium">${title}</div>
+    ${sub ? `<div class="text-[12px] text-mut max-w-xs">${sub}</div>` : ''}
+  </div>`;
+}
+const ICON_FOLDER = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>';
+const ICON_CHECK = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
+const ICON_DOC = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>';
 
 /* ---------------- chart of categories ---------------- */
 /* side: +1 normal debit, -1 normal credit. bal() returns natural-sign balance. */
@@ -556,6 +598,7 @@ function renderDashboard() {
     kpi('Revenue','–','load a trial balance'), kpi('Profit before tax','–',''),
     kpi('Total assets','–',''), kpi('Materiality','–','')
   ].join('');
+  animateKpis('dash-kpis');
 
   // pipeline
   const t = tbTotals();
@@ -839,7 +882,8 @@ function renderAudit() {
         <button class="btn btn-ghost !py-1.5 !text-[12.5px]" onclick="noteFinding('${f.id}')">Mark as noted / addressed</button>
       </div>` : `<div class="mt-2"><button class="btn btn-ghost !py-1 !text-[12px]" onclick="reopenFinding('${f.id}')">Reopen</button></div>`}
     </div>`;
-  }).join('') || '<div class="text-mut text-[13px]">No findings — either the books are immaculate or the TB is empty.</div>';
+  }).join('') || emptyState(ICON_CHECK, 'No findings', 'Either the books are immaculate, or the trial balance is still empty — import one on step 2.');
+  staggerChildren('findings-list', 35);
   renderAje();
 }
 function postAdj(fid) {
@@ -1665,7 +1709,8 @@ function renderClients() {
         </button>
       </div>
     </div>`;
-  }).join('') || '<div class="text-mut text-[13px]">No engagements yet.</div>';
+  }).join('') || emptyState(ICON_FOLDER, 'No engagements yet', 'Register a company to start your first audit file.');
+  staggerChildren('clients-grid', 45);
 }
 function newClientPrompt() { regOpen(); }
 function deleteClient(id) {
@@ -1768,9 +1813,13 @@ async function renderVault() {
           <button class="btn btn-ghost !px-1.5 !py-1 flex-none" onclick="vaultDelete('${f.id}')" aria-label="Delete">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#B91C1C" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
           </button>
-        </div>`).join('') || '<div class="text-[12px] text-mut">Nothing filed yet.</div>'}
+        </div>`).join('') || `<div class="flex items-center gap-2 py-1 text-mut">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>
+          <span class="text-[12px]">Nothing filed yet — upload above.</span>
+        </div>`}
     </div>`;
   }).join('');
+  staggerChildren('vault-grid', 45);
 }
 
 /* ---------- Ask Mr Auditor — account intelligence ---------- */
@@ -1910,6 +1959,7 @@ function renderHome() {
     kpi('Deadlines ≤ 60 days', dueSoon, 'incl. overdue, all clients', dueSoon ? 'text-warn' : '') +
     kpi('High-risk findings', openHigh, 'open across the portfolio', openHigh ? 'text-risk' : 'text-ok') +
     kpi('Ready for signing', ready, 'cleared + partner named', ready ? 'text-ok' : '');
+  animateKpis('home-kpis');
 
   allDeadlines.sort((a,b) => a.days - b.days);
   $('home-deadlines').innerHTML = allDeadlines.filter(d => d.days <= 90).slice(0, 8).map(d => `
