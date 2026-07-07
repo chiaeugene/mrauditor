@@ -6,52 +6,62 @@
 <title>Mr Auditor — Malaysian Statutory Audit Intelligence</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
+/* Apple-inspired design language: near-black ink, Apple blue accent, F5F5F7 surfaces,
+   frosted dark nav, pill buttons, tight display tracking. */
 tailwind.config = {
   theme: { extend: {
-    fontFamily: { sans: ['"IBM Plex Sans"','sans-serif'], mono: ['"IBM Plex Mono"','monospace'] },
+    fontFamily: { sans: ['-apple-system','BlinkMacSystemFont','"SF Pro Display"','Inter','"Segoe UI"','sans-serif'], mono: ['"SF Mono"','"IBM Plex Mono"','monospace'] },
     colors: {
-      ink:'#0B1437', navy:'#101C4A', indigo:'#3B49C9', indigosoft:'#EEF0FC',
-      mint:'#34D399', cyanx:'#22D3EE',
-      ok:'#15803D', warn:'#B45309', risk:'#B91C1C',
-      okbg:'#ECFDF3', warnbg:'#FFF7E6', riskbg:'#FEF2F2',
-      paper:'#F6F8FC', line:'#E4E9F2', mut:'#5B667E'
+      ink:'#1D1D1F', navy:'#161617', indigo:'#0071E3', indigosoft:'#EAF3FF',
+      mint:'#34C759', cyanx:'#5AC8FA',
+      ok:'#1D7D33', warn:'#A65B00', risk:'#D70015',
+      okbg:'#EBF9EE', warnbg:'#FFF6E8', riskbg:'#FFF0F1',
+      paper:'#F5F5F7', line:'#E8E8ED', mut:'#6E6E73'
     }
   }}
 }
 </script>
 <style>
-  html { font-feature-settings: "tnum"; }
-  body { background:#F6F8FC; color:#0B1437; }
-  .mono { font-family:"IBM Plex Mono",monospace; font-variant-numeric: tabular-nums; }
-  .card { background:#fff; border:1px solid #E4E9F2; border-radius:14px; }
-  .card-pad { padding:1.25rem; }
-  .navlink { display:flex; align-items:center; gap:.65rem; padding:.55rem .8rem; border-radius:10px; color:#B9C2DC; font-weight:500; font-size:.875rem; cursor:pointer; transition:background .15s,color .15s; }
-  .navlink:hover { background:rgba(255,255,255,.06); color:#fff; }
-  .navlink.active { background:#3B49C9; color:#fff; }
+  html { font-feature-settings: "tnum"; scroll-behavior:smooth; }
+  body { background:#FBFBFD; color:#1D1D1F; -webkit-font-smoothing:antialiased; }
+  h1,h2,h3,.tracking-display { letter-spacing:-0.02em; }
+  .mono { font-family:"SF Mono","IBM Plex Mono",monospace; font-variant-numeric: tabular-nums; }
+  .card { background:#fff; border:1px solid #E8E8ED; border-radius:18px; transition:box-shadow .25s ease, border-color .25s ease; }
+  .card:hover { box-shadow:0 4px 24px rgba(0,0,0,.05); }
+  .card-pad { padding:1.4rem; }
+  .navlink { display:flex; align-items:center; gap:.65rem; padding:.6rem .8rem; min-height:44px; border-radius:12px; color:rgba(255,255,255,.62); font-weight:500; font-size:.875rem; cursor:pointer; transition:background .2s ease,color .2s ease; }
+  .navlink:hover { background:rgba(255,255,255,.08); color:#fff; }
+  .navlink.active { background:rgba(255,255,255,.14); color:#fff; }
   .navlink svg { width:18px; height:18px; flex:none; }
-  .fieldlbl { display:block; font-size:.72rem; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:#5B667E; margin-bottom:.3rem; }
-  .field { width:100%; border:1px solid #E4E9F2; border-radius:10px; padding:.55rem .75rem; font-size:.875rem; background:#fff; color:#0B1437; }
-  .field:focus { outline:2px solid #3B49C9; outline-offset:0; border-color:#3B49C9; }
-  select.field { appearance:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235B667E' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right .7rem center; padding-right:2rem; }
-  .btn { display:inline-flex; align-items:center; gap:.45rem; border-radius:10px; padding:.55rem 1rem; font-size:.85rem; font-weight:600; cursor:pointer; transition:filter .15s, background .15s; border:1px solid transparent; }
+  .fieldlbl { display:block; font-size:.72rem; font-weight:600; letter-spacing:.03em; text-transform:uppercase; color:#6E6E73; margin-bottom:.3rem; }
+  .field { width:100%; border:1px solid #D2D2D7; border-radius:12px; padding:.6rem .8rem; min-height:44px; font-size:.9rem; background:#fff; color:#1D1D1F; transition:border-color .2s ease, box-shadow .2s ease; }
+  .field:focus { outline:none; border-color:#0071E3; box-shadow:0 0 0 3.5px rgba(0,113,227,.18); }
+  select.field { appearance:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236E6E73' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right .7rem center; padding-right:2rem; }
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:.45rem; border-radius:980px; padding:.6rem 1.15rem; min-height:44px; font-size:.875rem; font-weight:600; cursor:pointer; transition:transform .15s ease, filter .2s ease, background .2s ease; border:1px solid transparent; }
+  .btn:active { transform:scale(.97); }
   .btn svg { width:16px; height:16px; }
-  .btn-pri { background:#3B49C9; color:#fff; } .btn-pri:hover { filter:brightness(1.1); }
-  .btn-ghost { background:#fff; border-color:#E4E9F2; color:#0B1437; } .btn-ghost:hover { background:#F6F8FC; }
-  .btn-mint { background:#0E7A55; color:#fff; } .btn-mint:hover { filter:brightness(1.1); }
-  .btn-risk { background:#FEF2F2; border-color:#FECACA; color:#B91C1C; }
-  .pill { display:inline-flex; align-items:center; gap:.3rem; border-radius:999px; padding:.15rem .6rem; font-size:.72rem; font-weight:600; white-space:nowrap; }
-  .pill-ok { background:#ECFDF3; color:#15803D; } .pill-warn { background:#FFF7E6; color:#B45309; }
-  .pill-risk { background:#FEF2F2; color:#B91C1C; } .pill-info { background:#EEF0FC; color:#3B49C9; }
-  .pill-mut { background:#EEF1F6; color:#5B667E; }
-  .kpi-lbl { font-size:.72rem; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:#5B667E; }
-  .kpi-val { font-family:"IBM Plex Mono",monospace; font-size:1.45rem; font-weight:600; line-height:1.2; }
+  .btn-pri { background:#0071E3; color:#fff; } .btn-pri:hover { background:#0077ED; filter:brightness(1.04); }
+  .btn-ghost { background:#fff; border-color:#D2D2D7; color:#1D1D1F; } .btn-ghost:hover { background:#F5F5F7; }
+  .btn-mint { background:#1D7D33; color:#fff; } .btn-mint:hover { filter:brightness(1.08); }
+  .btn-risk { background:#FFF0F1; border-color:#FFD4D8; color:#D70015; }
+  .pill { display:inline-flex; align-items:center; gap:.3rem; border-radius:999px; padding:.2rem .65rem; font-size:.72rem; font-weight:600; white-space:nowrap; }
+  .pill-ok { background:#EBF9EE; color:#1D7D33; } .pill-warn { background:#FFF6E8; color:#A65B00; }
+  .pill-risk { background:#FFF0F1; color:#D70015; } .pill-info { background:#EAF3FF; color:#0071E3; }
+  .pill-mut { background:#F0F0F2; color:#6E6E73; }
+  .kpi-lbl { font-size:.72rem; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:#6E6E73; }
+  .kpi-val { font-family:"SF Mono","IBM Plex Mono",monospace; font-size:1.55rem; font-weight:600; line-height:1.2; letter-spacing:-0.01em; }
   table.tbl { width:100%; border-collapse:collapse; font-size:.83rem; }
-  table.tbl th { text-align:left; font-size:.7rem; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:#5B667E; padding:.5rem .6rem; border-bottom:1px solid #E4E9F2; }
-  table.tbl td { padding:.45rem .6rem; border-bottom:1px solid #EEF1F6; vertical-align:middle; }
-  table.tbl tr:hover td { background:#FAFBFE; }
+  table.tbl th { text-align:left; font-size:.7rem; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:#6E6E73; padding:.5rem .6rem; border-bottom:1px solid #E8E8ED; }
+  table.tbl td { padding:.45rem .6rem; border-bottom:1px solid #F0F0F2; vertical-align:middle; }
+  table.tbl tr:hover td { background:#FAFAFC; }
+  .hero-title { font-size:clamp(2rem,5vw,3.4rem); font-weight:800; letter-spacing:-0.03em; line-height:1.06; }
+  .hero-sub { font-size:clamp(1rem,2vw,1.35rem); color:#6E6E73; letter-spacing:-0.01em; }
+  .wiz-step { display:none; } .wiz-step.active { display:block; }
+  .wiz-dot { height:4px; border-radius:99px; flex:1; background:#E8E8ED; transition:background .3s ease; }
+  .wiz-dot.on { background:#0071E3; }
   .num { font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; }
   .fs-doc { font-size:.85rem; line-height:1.55; }
   .fs-doc h3 { font-weight:700; font-size:.95rem; margin:1.1rem 0 .4rem; }
@@ -86,7 +96,7 @@ tailwind.config = {
 <div class="flex min-h-screen">
 
   <!-- ============ SIDEBAR ============ -->
-  <aside class="hidden lg:flex w-64 flex-col fixed inset-y-0 bg-ink text-white z-20">
+  <aside class="hidden lg:flex w-64 flex-col fixed inset-y-0 text-white z-20" style="background:rgba(22,22,23,.94); backdrop-filter:saturate(180%) blur(20px)">
     <div class="flex items-center gap-3 px-5 pt-6 pb-5">
       <div class="w-10 h-10 rounded-xl flex items-center justify-center" style="background:linear-gradient(135deg,#8B5CF6,#5A7CF0,#34D399)">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-5"/><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/></svg>
@@ -97,12 +107,12 @@ tailwind.config = {
       </div>
     </div>
     <nav class="px-3 space-y-1 flex-1 overflow-y-auto pb-4" id="sidenav">
-      <div class="navlink" data-scr="clients">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
-        <span>Clients &amp; Engagements</span>
+      <div class="navlink active" data-scr="home">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>
+        <span>Home · Portfolio</span>
         <span id="nav-client-count" class="ml-auto text-[10px] bg-white/10 rounded-full px-1.5 py-0.5"></span>
       </div>
-      <div class="navlink active" data-scr="dashboard">
+      <div class="navlink" data-scr="dashboard">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
         Dashboard
       </div>
@@ -139,6 +149,10 @@ tailwind.config = {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="13" rx="2"/><path d="M8 8V6a4 4 0 018 0v2"/><circle cx="12" cy="14" r="2"/><path d="M12 16v2"/></svg>
         <span>8 · Evidence Vault</span>
         <span id="nav-vault-count" class="ml-auto text-[10px] bg-white/10 rounded-full px-1.5 py-0.5"></span>
+      </div>
+      <div class="navlink" data-scr="toolkit">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4.5 4.5 0 00-6.4 6.4L3 18v3h3l5.3-5.3a4.5 4.5 0 006.4-6.4L14 13l-3-3 3.7-3.7z"/></svg>
+        <span>9 · Auditor Toolkit</span>
       </div>
       <div class="text-[10px] font-semibold uppercase tracking-wider text-white/35 px-3 pt-4 pb-1">Reference</div>
       <div class="navlink" data-scr="ref">
@@ -187,19 +201,134 @@ tailwind.config = {
 
     <main class="px-4 lg:px-8 py-6 max-w-[1200px]">
 
-    <!-- ================= CLIENTS ================= -->
-    <section class="screen" id="scr-clients">
-      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <div>
-          <h2 class="font-bold text-[17px]">Clients &amp; engagements</h2>
-          <p class="text-[13px] text-mut">Every audit file the firm is running — click one to work on it.</p>
+    <!-- ================= HOME / LANDING ================= -->
+    <section class="screen" id="scr-home">
+      <div class="text-center pt-8 pb-10">
+        <h1 class="hero-title">Every audit.<br>Done beautifully.</h1>
+        <p class="hero-sub mt-4 max-w-xl mx-auto">Register a company, feed in the numbers, and Mr Auditor drafts the complete SSM-ready audit file — for a licensed auditor to review and sign.</p>
+        <div class="flex items-center justify-center gap-3 mt-7 flex-wrap">
+          <button class="btn btn-pri !px-6 !text-[15px]" onclick="regOpen()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 10h.01M15 10h.01M9 14h.01M15 14h.01"/></svg>
+            Register a company
+          </button>
+          <button class="btn btn-ghost !px-6 !text-[15px]" onclick="loadDemo()">See the demo</button>
         </div>
-        <button class="btn btn-pri" onclick="newClientPrompt()">
+      </div>
+
+      <div class="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-6" id="home-kpis"></div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-5 gap-4 mb-6">
+        <div class="card card-pad lg:col-span-3">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="font-bold text-[15px]">Deadlines across the portfolio</h2>
+            <span class="pill pill-info">next 90 days</span>
+          </div>
+          <div id="home-deadlines" class="space-y-1 text-[13px]"></div>
+        </div>
+        <div class="card card-pad lg:col-span-2">
+          <h2 class="font-bold text-[15px] mb-3">Needs the auditor's eye</h2>
+          <div id="home-attention" class="space-y-2 text-[13px]"></div>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <h2 class="font-bold text-[17px]">Engagements</h2>
+        <button class="btn btn-ghost" onclick="regOpen()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
           New engagement
         </button>
       </div>
       <div id="clients-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
+    </section>
+
+    <!-- ================= REGISTRATION WIZARD ================= -->
+    <section class="screen" id="scr-register">
+      <div class="max-w-3xl mx-auto">
+        <div class="text-center mb-6">
+          <h1 class="text-[26px] font-bold tracking-display">Register a company</h1>
+          <p class="text-[14px] text-mut mt-1">The intake an auditor actually needs — four short steps.</p>
+        </div>
+        <div class="flex gap-2 mb-6" id="wiz-progress">
+          <div class="wiz-dot on"></div><div class="wiz-dot"></div><div class="wiz-dot"></div><div class="wiz-dot"></div>
+        </div>
+
+        <!-- step 1: company -->
+        <div class="wiz-step active card card-pad" data-step="1">
+          <h2 class="font-bold text-[16px] mb-1">1 · Company particulars</h2>
+          <p class="text-[12.5px] text-mut mb-4">As per SSM records — this flows straight into the directors' report and audit report.</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div class="sm:col-span-2"><label class="fieldlbl">Company name <span class="text-risk">*</span></label><input class="field" id="r-name" placeholder="e.g. Sunrise Trading Sdn. Bhd."><div class="text-[11.5px] text-risk mt-1 hidden" id="r-name-err">Company name is required.</div></div>
+            <div><label class="fieldlbl">Registration no. (SSM) <span class="text-risk">*</span></label><input class="field mono" id="r-regno" placeholder="202001012345 (1234567-X)"><div class="text-[11.5px] text-risk mt-1 hidden" id="r-regno-err">Registration number is required.</div></div>
+            <div><label class="fieldlbl">Date of incorporation</label><input class="field mono" id="r-incdate" type="date"></div>
+            <div><label class="fieldlbl">Financial year end <span class="text-risk">*</span></label><input class="field mono" id="r-fye" type="date"><div class="text-[11.5px] text-risk mt-1 hidden" id="r-fye-err">FYE drives every statutory deadline.</div></div>
+            <div><label class="fieldlbl">Reporting framework</label><select class="field" id="r-framework"><option value="MPERS">MPERS (private entity)</option><option value="MFRS">MFRS (full IFRS-equivalent)</option></select></div>
+            <div class="sm:col-span-2"><label class="fieldlbl">Principal activity</label><input class="field" id="r-activity" placeholder="e.g. wholesale of construction materials"></div>
+            <div class="sm:col-span-2"><label class="fieldlbl">Registered office address</label><input class="field" id="r-address" placeholder="Level 3, Wisma ..., Kuala Lumpur"></div>
+            <div><label class="fieldlbl">Paid-up capital (RM)</label><input class="field mono" id="r-capital" inputmode="numeric" placeholder="500,000"></div>
+            <div><label class="fieldlbl">Employees at year end</label><input class="field mono" id="r-employees" type="number" inputmode="numeric" min="0"></div>
+            <div><label class="fieldlbl">Foreign / corporate shareholding &gt; 20%?</label><select class="field" id="r-foreign"><option value="no">No</option><option value="yes">Yes</option></select></div>
+            <div><label class="fieldlbl">First audit?</label><select class="field" id="r-firstaudit"><option value="no">No — recurring</option><option value="yes">Yes — first financial statements</option></select></div>
+          </div>
+        </div>
+
+        <!-- step 2: people -->
+        <div class="wiz-step card card-pad" data-step="2">
+          <h2 class="font-bold text-[16px] mb-1">2 · Directors &amp; contacts</h2>
+          <p class="text-[12.5px] text-mut mb-4">Directors sign the statement (s.251); the finance person signs the statutory declaration.</p>
+          <div id="r-directors" class="space-y-2 mb-2"></div>
+          <button class="btn btn-ghost !py-1.5 mb-4" onclick="regAddDirector()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> Add director
+          </button>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div><label class="fieldlbl">Person responsible for financial management</label><input class="field" id="r-finperson" placeholder="usually a director or the accountant"></div>
+            <div><label class="fieldlbl">Contact person for audit queries</label><input class="field" id="r-contact" placeholder="name"></div>
+            <div><label class="fieldlbl">Email</label><input class="field" id="r-email" type="email" autocomplete="email" placeholder="finance@company.com"></div>
+            <div><label class="fieldlbl">Phone</label><input class="field mono" id="r-phone" type="tel" autocomplete="tel" placeholder="+60 12-345 6789"></div>
+          </div>
+        </div>
+
+        <!-- step 3: audit profile -->
+        <div class="wiz-step card card-pad" data-step="3">
+          <h2 class="font-bold text-[16px] mb-1">3 · Audit profile</h2>
+          <p class="text-[12.5px] text-mut mb-4">What the engagement team needs before fieldwork starts.</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div><label class="fieldlbl">Previous auditor (if any)</label><input class="field" id="r-prevauditor" placeholder="firm name — professional clearance needed"></div>
+            <div><label class="fieldlbl">Accounting software / records</label><input class="field" id="r-software" placeholder="e.g. SQL Account, AutoCount, Excel"></div>
+            <div class="sm:col-span-2"><label class="fieldlbl">Banks used (all accounts &amp; facilities)</label><input class="field" id="r-banks" placeholder="e.g. Maybank (CA + TL), CIMB (CA), Public Bank (FD)"></div>
+            <div><label class="fieldlbl">Any borrowings / HP?</label><select class="field" id="r-borrowings"><option value="no">No</option><option value="yes">Yes</option></select></div>
+            <div><label class="fieldlbl">SST registered?</label><select class="field" id="r-sst"><option value="no">No</option><option value="yes">Yes</option><option value="unsure">Not sure — check</option></select></div>
+            <div><label class="fieldlbl">e-Invoicing (MyInvois) live?</label><select class="field" id="r-einvoice"><option value="no">Not yet</option><option value="yes">Yes</option></select></div>
+            <div><label class="fieldlbl">Bookkeeping condition</label><select class="field" id="r-bookkeeping"><option value="good">Good — reconciled monthly</option><option value="average">Average — needs cleanup</option><option value="poor">Poor — incomplete records</option></select></div>
+            <div class="sm:col-span-2"><label class="fieldlbl">Known issues / risk notes</label><textarea class="field" id="r-risknotes" rows="3" placeholder="e.g. director advances, slow debtors, stock count never done…"></textarea></div>
+          </div>
+        </div>
+
+        <!-- step 4: attachments -->
+        <div class="wiz-step card card-pad" data-step="4">
+          <h2 class="font-bold text-[16px] mb-1">4 · Attach what you already have</h2>
+          <p class="text-[12.5px] text-mut mb-4">Everything lands in the Evidence Vault under the right category. You can always add more later.</p>
+          <div id="r-attach" class="space-y-3"></div>
+        </div>
+
+        <div class="flex items-center gap-3 mt-5">
+          <button class="btn btn-ghost" id="wiz-back" onclick="regBack()">Back</button>
+          <div class="text-[12px] text-mut" id="wiz-stepinfo">Step 1 of 4</div>
+          <button class="btn btn-pri ml-auto !px-6" id="wiz-next" onclick="regNext()">Continue</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= AUDITOR TOOLKIT ================= -->
+    <section class="screen" id="scr-toolkit">
+      <div class="flex flex-wrap gap-2 mb-5 no-print" id="tk-tabs">
+        <button class="btn btn-pri tk-tab" data-tk="ca">Capital allowances</button>
+        <button class="btn btn-ghost tk-tab" data-tk="confirm">Confirmation letters</button>
+        <button class="btn btn-ghost tk-tab" data-tk="bankin">Bank-in reconciliation</button>
+        <button class="btn btn-ghost tk-tab" data-tk="lead">Lead schedules</button>
+        <button class="btn btn-ghost tk-tab" data-tk="roll">Roll forward</button>
+        <button class="btn btn-ghost tk-tab" data-tk="data">Export / import</button>
+      </div>
+      <div id="tk-render"></div>
     </section>
 
     <!-- ================= EVIDENCE VAULT ================= -->

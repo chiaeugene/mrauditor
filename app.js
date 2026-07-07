@@ -23,6 +23,9 @@ const BLANK = () => ({
   sign: { firm:'', af:'', partner:'', approval:'', place:'', date:'', opinion:'unmodified',
           goingconcern:false, otherinfo:true },
   notes: {},              // note-detail inputs that kill the FS-notes placeholders
+  intake: {},             // registration-wizard audit profile
+  caAssets: [],           // capital allowance schedule rows
+  bankin: {},             // bank-in reconciliation inputs
   repTab: 'auditor'
 });
 const nid = () => 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
@@ -494,9 +497,9 @@ function deadlinesHTML() {
    ============================================================ */
 
 /* ---------- navigation ---------- */
-const TITLES = { clients:'Clients & Engagements', dashboard:'Dashboard', setup:'Engagement Setup', tb:'Trial Balance',
+const TITLES = { home:'Mr Auditor', register:'Register a company', dashboard:'Dashboard', setup:'Engagement Setup', tb:'Trial Balance',
   audit:'Audit Engine', fs:'Financial Statements', tax:'Tax Computation',
-  reports:'Reports & Sign-off', pack:'Full Audit Pack', vault:'Evidence Vault', ref:'Regulatory Compass' };
+  reports:'Reports & Sign-off', pack:'Full Audit Pack', vault:'Evidence Vault', toolkit:'Auditor Toolkit', ref:'Regulatory Compass' };
 let current = 'dashboard';
 function show(scr) {
   current = scr;
@@ -515,8 +518,8 @@ function closeNav(){ $('mobile-nav').classList.add('-translate-x-full'); $('nav-
 
 function render(scr = current) {
   updateTop();
-  ({ clients:renderClients, dashboard:renderDashboard, setup:renderSetup, tb:renderTB, audit:renderAudit,
-     fs:renderFS, tax:renderTax, reports:renderReports, pack:renderPack, vault:renderVault, ref:renderRef }[scr])();
+  ({ home:renderHome, register:renderRegister, dashboard:renderDashboard, setup:renderSetup, tb:renderTB, audit:renderAudit,
+     fs:renderFS, tax:renderTax, reports:renderReports, pack:renderPack, vault:renderVault, toolkit:renderToolkit, ref:renderRef }[scr])();
 }
 function updateTop() {
   $('top-sub').textContent = S.setup.name
@@ -1664,14 +1667,7 @@ function renderClients() {
     </div>`;
   }).join('') || '<div class="text-mut text-[13px]">No engagements yet.</div>';
 }
-function newClientPrompt() {
-  const name = prompt('Client / company name for the new engagement:');
-  if (name === null) return;
-  newClient(name.trim());
-  renderClients(); updateTop();
-  toast('Engagement created — set it up');
-  show('setup');
-}
+function newClientPrompt() { regOpen(); }
 function deleteClient(id) {
   const c = DB.clients.find(x => x.id === id);
   if (!confirm(`Delete the engagement "${c?.setup.name || 'Untitled'}" and all its attached evidence? This cannot be undone.`)) return;
@@ -1679,7 +1675,7 @@ function deleteClient(id) {
   idbDeleteClient(id).catch(()=>{});
   if (!DB.clients.length) newClient('');
   if (DB.activeId === id) { DB.activeId = DB.clients[0].id; S = activeClient(); }
-  saveState(); renderClients(); updateTop();
+  saveState(); render(current); updateTop();
 }
 
 /* ---------- evidence vault (IndexedDB) ---------- */
@@ -1888,6 +1884,479 @@ function askSearch() {
     : `<div class="text-[13px] text-mut px-1 py-3">No account matches “${esc(q)}”. Topics: ${Object.keys(ASK_TOPICS).join(', ')}.</div>`;
 }
 
+/* ---------- home / landing ---------- */
+function renderHome() {
+  // firm-wide KPIs
+  const real = DB.clients.filter(c => c.setup.name || c.tb.length);
+  let dueSoon = 0, openHigh = 0, ready = 0;
+  const allDeadlines = [];
+  const keep = S;
+  for (const c of real) {
+    S = c;
+    try {
+      for (const d of deadlines()) { allDeadlines.push({ ...d, client: c.setup.name || 'Untitled', cid: c.id });
+        if (d.days >= 0 && d.days <= 60) dueSoon++; if (d.days < 0) dueSoon++; }
+      if (c.tb.length) { const ev = evaluate();
+        openHigh += ev.open.filter(f => ['blocker','high'].includes(f.sev)).length;
+        if (ev.open.filter(f=>['blocker','high'].includes(f.sev)).length === 0 && c.sign.partner) ready++; }
+    } catch(e) {}
+  }
+  S = keep;
+  const kpi = (lbl, val, sub, tone='') => `
+    <div class="card card-pad"><div class="kpi-lbl">${lbl}</div>
+    <div class="kpi-val ${tone}">${val}</div><div class="text-[12px] text-mut mt-0.5">${sub}</div></div>`;
+  $('home-kpis').innerHTML =
+    kpi('Engagements', real.length, 'active audit files') +
+    kpi('Deadlines ≤ 60 days', dueSoon, 'incl. overdue, all clients', dueSoon ? 'text-warn' : '') +
+    kpi('High-risk findings', openHigh, 'open across the portfolio', openHigh ? 'text-risk' : 'text-ok') +
+    kpi('Ready for signing', ready, 'cleared + partner named', ready ? 'text-ok' : '');
+
+  allDeadlines.sort((a,b) => a.days - b.days);
+  $('home-deadlines').innerHTML = allDeadlines.filter(d => d.days <= 90).slice(0, 8).map(d => `
+    <div class="flex items-center gap-3 py-1.5 border-b border-line/60 last:border-0 cursor-pointer hover:bg-paper rounded-lg px-1"
+         onclick="switchClient('${d.cid}'); show('dashboard')">
+      <div class="min-w-0 flex-1">
+        <div class="font-medium truncate">${d.label}</div>
+        <div class="text-[11px] text-mut truncate">${esc(d.client)} · ${dMY(d.date)}</div>
+      </div>${deadlineChip(d.days)}
+    </div>`).join('') || '<div class="text-mut">Nothing due in the next 90 days — or no FYE set yet.</div>';
+
+  // attention: worst finding per client
+  const attention = [];
+  for (const c of real) { S = c;
+    try { if (c.tb.length) { const worst = evaluate().open.find(f => ['blocker','high'].includes(f.sev));
+      if (worst) attention.push({ client: c.setup.name || 'Untitled', cid: c.id, f: worst }); } } catch(e) {}
+  }
+  S = keep;
+  $('home-attention').innerHTML = attention.slice(0,6).map(a => `
+    <div class="sevrow sev-${a.f.sev} pl-3 py-1.5 cursor-pointer hover:bg-paper rounded-r-lg"
+         onclick="switchClient('${a.cid}'); show('audit')">
+      <div class="font-medium text-[13px] truncate">${a.f.title}</div>
+      <div class="text-[11.5px] text-mut truncate">${esc(a.client)}</div>
+    </div>`).join('') || '<div class="text-mut">No high-risk findings anywhere. Enjoy it while it lasts.</div>';
+
+  renderClients();
+}
+
+/* ---------- registration wizard ---------- */
+let regStep = 1;
+let regDraft = null;
+const REG_ATTACH_CATS = ['Prior-year FS & working papers','Bank statements & confirmations','SSM & statutory records',
+  'Tax — CP204 / Form C / assessments','Fixed asset register & invoices','Others'];
+function regOpen() {
+  regStep = 1;
+  regDraft = { directors:[{name:'',ic:''},{name:'',ic:''}], files:[] };
+  show('register');
+}
+function renderRegister() {
+  if (!regDraft) { regDraft = { directors:[{name:'',ic:''},{name:'',ic:''}], files:[] }; regStep = 1; }
+  document.querySelectorAll('.wiz-step').forEach(s => s.classList.toggle('active', +s.dataset.step === regStep));
+  document.querySelectorAll('.wiz-dot').forEach((d,i) => d.classList.toggle('on', i < regStep));
+  $('wiz-stepinfo').textContent = `Step ${regStep} of 4`;
+  $('wiz-back').style.visibility = regStep === 1 ? 'hidden' : 'visible';
+  $('wiz-next').textContent = regStep === 4 ? 'Create engagement' : 'Continue';
+  if (regStep === 2) regRenderDirectors();
+  if (regStep === 4) regRenderAttach();
+}
+function regRenderDirectors() {
+  $('r-directors').innerHTML = regDraft.directors.map((d,i) => `
+    <div class="flex gap-2 items-center">
+      <input class="field flex-1" value="${esc(d.name)}" placeholder="Director ${i+1} name"
+        onchange="regDraft.directors[${i}].name=this.value">
+      <input class="field mono !w-44" value="${esc(d.ic)}" placeholder="NRIC"
+        onchange="regDraft.directors[${i}].ic=this.value">
+      <button class="btn btn-ghost !px-2.5" onclick="regDraft.directors.splice(${i},1); regRenderDirectors()" aria-label="Remove director">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="#D70015" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>`).join('');
+}
+function regRenderAttach() {
+  $('r-attach').innerHTML = REG_ATTACH_CATS.map((cat,i) => {
+    const n = regDraft.files.filter(f => f.cat === cat).length;
+    return `
+    <div class="flex items-center gap-3 border border-line rounded-xl px-3.5 py-2.5">
+      <div class="min-w-0 flex-1">
+        <div class="font-medium text-[13.5px]">${cat}</div>
+        <div class="text-[11.5px] ${n?'text-ok font-medium':'text-mut'}">${n ? n + ' file(s) attached' : cat.startsWith('Prior')?'e.g. last year’s signed audit report':'optional now, add anytime'}</div>
+      </div>
+      <label class="btn btn-ghost !py-1.5 cursor-pointer">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>
+        Choose<input type="file" multiple class="hidden" onchange="regAttach(this, ${i})">
+      </label>
+    </div>`;
+  }).join('');
+}
+function regAttach(input, catIdx) {
+  for (const f of input.files) regDraft.files.push({ cat: REG_ATTACH_CATS[catIdx], file: f });
+  input.value = '';
+  regRenderAttach();
+}
+function regAddDirector(){ regDraft.directors.push({name:'',ic:''}); regRenderDirectors(); }
+function regBack(){ if (regStep > 1) { regStep--; renderRegister(); } }
+async function regNext() {
+  if (regStep === 1) {
+    // inline validation — the three fields the file cannot exist without
+    let ok = true;
+    for (const [id, err] of [['r-name','r-name-err'],['r-regno','r-regno-err'],['r-fye','r-fye-err']]) {
+      const bad = !$(id).value.trim();
+      $(err).classList.toggle('hidden', !bad);
+      $(id).style.borderColor = bad ? '#D70015' : '';
+      if (bad && ok) { $(id).focus(); ok = false; }
+    }
+    if (!ok) return;
+  }
+  if (regStep < 4) { regStep++; renderRegister(); return; }
+  // finish: create the engagement from the whole wizard
+  const g = id => $(id).value.trim();
+  const c = newClient(g('r-name'));
+  Object.assign(c.setup, { regno:g('r-regno'), incdate:g('r-incdate'), fye:g('r-fye'), activity:g('r-activity'),
+    framework:g('r-framework'), capital:g('r-capital'), employees:g('r-employees'),
+    firstaudit:g('r-firstaudit'), foreign:g('r-foreign'), address:g('r-address') });
+  c.directors = regDraft.directors.filter(d => d.name.trim());
+  c.intake = { finperson:g('r-finperson'), contact:g('r-contact'), email:g('r-email'), phone:g('r-phone'),
+    prevauditor:g('r-prevauditor'), software:g('r-software'), banks:g('r-banks'), borrowings:g('r-borrowings'),
+    sst:g('r-sst'), einvoice:g('r-einvoice'), bookkeeping:g('r-bookkeeping'), risknotes:g('r-risknotes') };
+  saveState();
+  let uploaded = 0;
+  try { if (!idb) await idbOpen();
+    for (const { cat, file } of regDraft.files) {
+      await idbPut({ id:nid(), clientId:c.id, cat, name:file.name, type:file.type, size:file.size,
+        uploadedAt:Date.now(), blob:file });
+      uploaded++;
+    }
+  } catch(e) {}
+  // reset wizard fields for next time
+  ['r-name','r-regno','r-incdate','r-fye','r-activity','r-address','r-capital','r-employees','r-finperson',
+   'r-contact','r-email','r-phone','r-prevauditor','r-software','r-banks','r-risknotes'].forEach(id => $(id).value = '');
+  regDraft = null;
+  toast(`${c.setup.name} registered${uploaded ? ' · ' + uploaded + ' file(s) filed in the vault' : ''}`);
+  show('dashboard');
+}
+
+/* ---------- auditor toolkit ---------- */
+let tkTab = 'ca';
+document.addEventListener('click', e => {
+  const b = e.target.closest('.tk-tab'); if (!b) return;
+  tkTab = b.dataset.tk;
+  document.querySelectorAll('.tk-tab').forEach(x => { x.classList.toggle('btn-pri', x===b); x.classList.toggle('btn-ghost', x!==b); });
+  renderToolkit();
+});
+const CA_CLASSES = [
+  ['heavy','Heavy machinery / motor vehicles (commercial)',20,20],
+  ['plant','General plant & machinery',20,14],
+  ['office','Office equipment & furniture',20,10],
+  ['computer','Computers & ICT equipment',20,20],
+  ['motor','Motor vehicle (non-commercial — QE capped RM50k/RM100k)',20,20],
+  ['building','Industrial building allowance',10,3],
+];
+function renderToolkit() {
+  document.querySelectorAll('.tk-tab').forEach(x => { x.classList.toggle('btn-pri', x.dataset.tk===tkTab); x.classList.toggle('btn-ghost', x.dataset.tk!==tkTab); });
+  const el = $('tk-render');
+  if (tkTab === 'ca') return tkCA(el);
+  if (tkTab === 'confirm') return tkConfirm(el);
+  if (tkTab === 'bankin') return tkBankin(el);
+  if (tkTab === 'lead') return tkLead(el);
+  if (tkTab === 'roll') return tkRoll(el);
+  if (tkTab === 'data') return tkData(el);
+}
+/* capital allowance schedule */
+function caCompute(a) {
+  const cls = CA_CLASSES.find(c => c[0] === a.cls) || CA_CLASSES[1];
+  let qe = num(a.cost);
+  let capped = false;
+  if (a.cls === 'motor' && qe > 100000) { qe = 100000; capped = true; }
+  const ia = a.isNew === 'yes' ? Math.round(qe * cls[2] / 100) : 0;
+  const aa = Math.round(qe * cls[3] / 100);
+  const prior = num(a.priorClaimed);
+  const remaining = Math.max(qe - prior - ia, 0);
+  const claim = ia + Math.min(aa, remaining);
+  return { qe, ia, aa: Math.min(aa, remaining), claim, capped, rate: cls };
+}
+function tkCA(el) {
+  const total = S.caAssets.reduce((s,a) => s + caCompute(a).claim, 0);
+  el.innerHTML = `
+  <div class="card card-pad">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-1">
+      <h2 class="font-bold text-[15px]">Capital allowance schedule — Schedule 3, ITA 1967</h2>
+      <span class="pill pill-info mono">Total claim ${fmtRM(total)}</span>
+    </div>
+    <p class="text-[12.5px] text-mut mb-4">Per-asset IA/AA. Initial allowance only in the year of acquisition; annual allowance stops once the asset is fully claimed. Non-commercial vehicles capped at RM100k QE (RM50k if cost &gt; RM150k — verify).</p>
+    <div class="overflow-x-auto"><table class="tbl min-w-[820px]">
+      <thead><tr><th class="w-[26%]">Asset</th><th class="w-[24%]">Class</th><th class="num">Cost (RM)</th><th>New this YA?</th><th class="num">Claimed b/f</th><th class="num">IA</th><th class="num">AA</th><th class="num">This YA</th><th></th></tr></thead>
+      <tbody>${S.caAssets.map((a,i) => { const c = caCompute(a); return `
+        <tr>
+          <td><input class="field !py-1.5 !text-[13px]" value="${esc(a.desc)}" placeholder="e.g. CNC milling machine" onchange="S.caAssets[${i}].desc=this.value; saveState()"></td>
+          <td><select class="field !py-1.5 !text-[12px]" onchange="S.caAssets[${i}].cls=this.value; saveState(); renderToolkit()">
+            ${CA_CLASSES.map(cl => `<option value="${cl[0]}" ${a.cls===cl[0]?'selected':''}>${cl[1]} (${cl[2]}/${cl[3]})</option>`).join('')}</select></td>
+          <td class="num"><input class="field mono !py-1.5 !text-right !w-28" value="${a.cost?fmt(num(a.cost)):''}" onchange="S.caAssets[${i}].cost=this.value; saveState(); renderToolkit()"></td>
+          <td><select class="field !py-1.5 !text-[12px] !w-20" onchange="S.caAssets[${i}].isNew=this.value; saveState(); renderToolkit()">
+            <option value="no" ${a.isNew!=='yes'?'selected':''}>No</option><option value="yes" ${a.isNew==='yes'?'selected':''}>Yes</option></select></td>
+          <td class="num"><input class="field mono !py-1.5 !text-right !w-24" value="${a.priorClaimed?fmt(num(a.priorClaimed)):''}" onchange="S.caAssets[${i}].priorClaimed=this.value; saveState(); renderToolkit()"></td>
+          <td class="num mono">${fmt(c.ia, true)}</td>
+          <td class="num mono">${fmt(c.aa, true)}</td>
+          <td class="num mono font-semibold">${fmt(c.claim, true)}${c.capped?' <span class="pill pill-warn">QE capped</span>':''}</td>
+          <td><button class="btn btn-ghost !px-1.5 !py-1" onclick="S.caAssets.splice(${i},1); saveState(); renderToolkit()" aria-label="Remove asset">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#D70015" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button></td>
+        </tr>`; }).join('') || '<tr><td colspan="9" class="text-center text-mut py-6">No assets yet — add from the fixed asset register.</td></tr>'}
+      </tbody></table></div>
+    <div class="flex flex-wrap gap-2 mt-3">
+      <button class="btn btn-ghost" onclick="S.caAssets.push({id:nid(), desc:'', cls:'plant', cost:'', isNew:'no', priorClaimed:''}); saveState(); renderToolkit()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> Add asset</button>
+      <button class="btn btn-pri" onclick="S.tax.ca = String(${total}); S.tax._touched = true; saveState(); toast('RM ${fmt(total)} applied to the tax computation'); show('tax')">
+        Apply ${fmtRM(total)} to tax computation</button>
+    </div>
+  </div>`;
+}
+/* confirmation letters */
+let tkConfirmSel = { type:'bank', rowId:null };
+function tkConfirm(el) {
+  const CATS_BY_TYPE = { bank:['CASH','FD','BORR','OD','HP'], receivable:['TR'], director:['DIRADV','DIROWE'] };
+  const rows = S.tb.filter(r => CATS_BY_TYPE[tkConfirmSel.type].includes(r.cat));
+  const sel = rows.find(r => r.id === tkConfirmSel.rowId) || rows[0];
+  const bal = sel ? (num(sel.dr) - num(sel.cr)) * CAT[sel.cat].side : 0;
+  const fye = dMY(S.setup.fye);
+  const firm = esc(S.sign.firm) || '[Audit firm]';
+  const body = !sel ? '<p class="text-mut text-[13px]">No matching accounts on the trial balance for this letter type.</p>' :
+    tkConfirmSel.type === 'bank' ? `
+      <p>The Manager<br><strong>${esc(sel.name)}</strong><br>[Branch address]</p>
+      <p><strong>RE: AUDIT CONFIRMATION — ${esc(S.setup.name).toUpperCase()} (${esc(S.setup.regno)})</strong></p>
+      <p>Dear Sir/Madam,</p>
+      <p>Our auditors, <strong>${firm}</strong>, are auditing our financial statements. Kindly furnish them directly with the following information relating to our company as at <strong>${fye}</strong>:</p>
+      <p>1. Balances of all current, savings, fixed deposit and loan accounts (per our records: ${fmtRM(Math.abs(bal))});<br>
+      2. Details of all banking facilities, interest rates and securities pledged;<br>
+      3. Any liens, guarantees, contingent liabilities or amounts held as security;<br>
+      4. Authorised signatories.</p>
+      <p>This authorisation remains in force until revoked in writing. Please send your reply directly to ${firm}.</p>
+      <p>Yours faithfully,<br><br><br>_____________________________<br><strong>${esc(S.directors[0]?.name) || '[Authorised signatory]'}</strong><br>Director, ${esc(S.setup.name)}</p>` :
+    tkConfirmSel.type === 'receivable' ? `
+      <p>[Customer name and address]</p>
+      <p><strong>RE: AUDIT CONFIRMATION OF BALANCE — ${esc(S.setup.name).toUpperCase()}</strong></p>
+      <p>Dear Sir/Madam,</p>
+      <p>In connection with the audit of our financial statements, please confirm directly to our auditors, <strong>${firm}</strong>, the balance owing by you to us as at <strong>${fye}</strong>, which our records show as <strong>${fmtRM(Math.abs(bal))}</strong> (account: ${esc(sel.name)}).</p>
+      <p>If the amount does not agree with your records, please provide details of the difference. This request is for confirmation purposes only and is not a demand for payment.</p>
+      <p>Yours faithfully,<br><br><br>_____________________________<br><strong>${esc(S.directors[0]?.name) || '[Authorised signatory]'}</strong><br>Director, ${esc(S.setup.name)}</p>` : `
+      <p><strong>${esc(S.directors[0]?.name) || '[Director name]'}</strong><br>[Address]</p>
+      <p><strong>RE: CONFIRMATION OF AMOUNT ${bal >= 0 ? 'OWING BY YOU TO' : 'OWING TO YOU BY'} ${esc(S.setup.name).toUpperCase()}</strong></p>
+      <p>Dear Sir/Madam,</p>
+      <p>In connection with the audit of the financial statements of ${esc(S.setup.name)} for the financial year ended <strong>${fye}</strong>, please confirm directly to our auditors, <strong>${firm}</strong>, that the balance ${bal >= 0 ? 'owing by you to the Company' : 'owing by the Company to you'} as at that date was <strong>${fmtRM(Math.abs(bal))}</strong> (${esc(sel.name)}), and that this balance is non-trade in nature, unsecured, interest-free and repayable on demand [amend if terms differ].</p>
+      <p>I confirm the above is correct:<br><br><br>_____________________________<br>Name / NRIC / Date</p>`;
+  el.innerHTML = `
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+    <div class="card card-pad no-print">
+      <h2 class="font-bold text-[15px] mb-3">Confirmation letters (ISA 505)</h2>
+      <label class="fieldlbl">Letter type</label>
+      <select class="field mb-3" onchange="tkConfirmSel={type:this.value, rowId:null}; renderToolkit()">
+        <option value="bank" ${tkConfirmSel.type==='bank'?'selected':''}>Bank confirmation request</option>
+        <option value="receivable" ${tkConfirmSel.type==='receivable'?'selected':''}>Trade receivable circularisation</option>
+        <option value="director" ${tkConfirmSel.type==='director'?'selected':''}>Director balance confirmation</option>
+      </select>
+      <label class="fieldlbl">Account</label>
+      <select class="field mb-3" onchange="tkConfirmSel.rowId=this.value; renderToolkit()">
+        ${rows.map(r => `<option value="${r.id}" ${sel && r.id===sel.id?'selected':''}>${esc(r.name)} — ${fmtRM(Math.abs((num(r.dr)-num(r.cr))*CAT[r.cat].side))}</option>`).join('') || '<option>none available</option>'}
+      </select>
+      <button class="btn btn-pri w-full" onclick="printSection('tk-letter')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
+        Print / PDF letter</button>
+      <p class="text-[11.5px] text-mut mt-3">Replies must go directly to the audit firm — never through the client (ISA 505 requirement).</p>
+    </div>
+    <div class="card card-pad lg:col-span-2 rep-doc" id="tk-letter">
+      <p class="text-[12px] text-mut">[On ${esc(S.setup.name) || 'company'} letterhead — ${esc(S.setup.address) || 'registered address'}]</p>
+      <p>${dMY(S.sign.date || dISO(new Date()))}</p>
+      ${body}
+    </div>
+  </div>`;
+}
+/* bank-in reconciliation */
+function tkBankin(el) {
+  const m = S.tb.length ? model() : null;
+  const b = S.bankin || {};
+  const credits = num(b.credits), nonSales = num(b.nonSales);
+  const netBankIn = credits - nonSales;
+  const recorded = m ? m.revenue + m.othinc : 0;
+  const gap = netBankIn - recorded;
+  const gapPct = recorded ? gap / recorded * 100 : 0;
+  const verdict = !credits ? null : Math.abs(gapPct) <= 5 ? ['pill-ok','Within 5% — reasonable'] :
+    Math.abs(gapPct) <= 15 ? ['pill-warn','5–15% gap — obtain explanations'] : ['pill-risk','>15% gap — revenue completeness risk'];
+  el.innerHTML = `
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <div class="card card-pad">
+      <h2 class="font-bold text-[15px] mb-1">Bank-in vs recorded revenue</h2>
+      <p class="text-[12.5px] text-mut mb-4">The 老板 test: total credits into ALL bank accounts should explain recorded revenue. Paste the credit column from the bank statements (one amount per line) or enter the year's total.</p>
+      <label class="fieldlbl">Paste credit amounts (one per line)</label>
+      <textarea class="field mono !text-[12px]" id="bk-paste" rows="6" placeholder="12,500.00&#10;8,340.50&#10;..."></textarea>
+      <button class="btn btn-ghost mt-2 mb-4" onclick="const t=$('bk-paste').value.split(/\\n/).map(x=>num(x)).filter(x=>x>0).reduce((s,x)=>s+x,0); S.bankin.credits=String(Math.round(t)); saveState(); renderToolkit()">Sum the paste → total</button>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div><label class="fieldlbl">Total bank credits for the year (RM)</label><input class="field mono" value="${b.credits?fmt(num(b.credits)):''}" onchange="S.bankin.credits=this.value; saveState(); renderToolkit()"></div>
+        <div><label class="fieldlbl">Less: non-sales credits (transfers, loans, capital)</label><input class="field mono" value="${b.nonSales?fmt(num(b.nonSales)):''}" onchange="S.bankin.nonSales=this.value; saveState(); renderToolkit()"></div>
+      </div>
+    </div>
+    <div class="card card-pad">
+      <h2 class="font-bold text-[15px] mb-3">Verdict</h2>
+      ${!m ? '<div class="text-mut text-[13px]">Import a trial balance first.</div>' : `
+      <table class="fs-doc" style="width:100%">
+        <tr><td>Total bank credits</td><td class="num" style="width:130px">${fmt(credits, true)}</td></tr>
+        <tr><td>Less: non-sales credits</td><td class="num">${fmt(-nonSales, true)}</td></tr>
+        <tr class="fs-line"><td>Net business bank-in</td><td class="num">${fmt(netBankIn, true)}</td></tr>
+        <tr><td>Recorded revenue + other income</td><td class="num">${fmt(recorded, true)}</td></tr>
+        <tr class="fs-total"><td>Gap ${credits ? '(' + gapPct.toFixed(1) + '%)' : ''}</td><td class="num">${fmt(gap, true)}</td></tr>
+      </table>
+      ${verdict ? `<div class="mt-4 flex items-center gap-2"><span class="pill ${verdict[0]} !text-[13px] !px-3 !py-1">${verdict[1]}</span></div>
+      <p class="text-[12.5px] text-mut mt-3">${gap > 0 ? 'Bank-in exceeds recorded income — possible unrecorded revenue (or unidentified non-sales credits). Trace the largest unexplained deposits.' : gap < 0 ? 'Recorded income exceeds bank-in — cash sales not banked in, receivables uncollected, or revenue overstated. Tie to the receivables movement.' : ''}</p>` : '<p class="text-mut text-[13px] mt-2">Enter the bank credits to get the verdict.</p>'}`}
+    </div>
+  </div>`;
+}
+/* lead schedules */
+const LEAD_AREAS = {
+  'Revenue & income':['REV','OTHINC'], 'Cost of sales':['COS','INV'], 'Operating expenses':['ADMIN','SELL','DEPR'],
+  'Receivables':['TR','OR','DIRADV','RPTREC'], 'Cash & bank':['CASH','FD','OD'],
+  'Property, plant & equipment':['PPE','ACCDEP'], 'Payables & accruals':['TP','OP','DIROWE','RPTPAY'],
+  'Borrowings':['BORR','HP','FIN'], 'Equity & tax':['SC','RE','DIV','TAXEXP','TAXPAY','DEFTAX'],
+};
+let tkLeadArea = 'Receivables';
+function tkLead(el) {
+  if (!S.tb.length) { el.innerHTML = '<div class="card card-pad text-mut text-[13px]">Import a trial balance first.</div>'; return; }
+  const cats = LEAD_AREAS[tkLeadArea];
+  const rows = S.tb.filter(r => cats.includes(r.cat));
+  const mat = materiality();
+  let tot = 0, totPy = 0;
+  const trs = rows.map(r => {
+    const cy = (num(r.dr) - num(r.cr)) * CAT[r.cat].side, py = num(r.py);
+    tot += cy; totPy += py;
+    const mv = py ? (cy-py)/Math.abs(py)*100 : null;
+    return `<tr><td>${esc(r.name)}</td><td class="text-[11px] text-mut">${CAT[r.cat].label}</td>
+      <td class="num mono">${fmt(cy,true)}</td><td class="num mono text-mut">${fmt(py,true)}</td>
+      <td class="num mono ${mv!==null&&Math.abs(mv)>25?'text-warn font-semibold':''}">${mv===null?'–':(mv>0?'+':'')+mv.toFixed(1)+'%'}</td>
+      <td class="num mono">${(Math.abs(cy)/mat.overall*100).toFixed(0)}%</td></tr>`;
+  }).join('');
+  const procs = [...new Set(cats.flatMap(c => (KB[c]||{p:[]}).p))];
+  el.innerHTML = `
+  <div class="card card-pad no-print mb-4">
+    <div class="flex flex-wrap items-end gap-3">
+      <div><label class="fieldlbl">Lead schedule area</label>
+        <select class="field !w-72" onchange="tkLeadArea=this.value; renderToolkit()">
+          ${Object.keys(LEAD_AREAS).map(a => `<option ${a===tkLeadArea?'selected':''}>${a}</option>`).join('')}
+        </select></div>
+      <button class="btn btn-pri ml-auto" onclick="printSection('tk-leaddoc')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
+        Print working paper</button>
+    </div>
+  </div>
+  <div class="card card-pad" id="tk-leaddoc">
+    <div class="flex items-start justify-between flex-wrap gap-2">
+      <div>
+        <div class="font-bold text-[15px]">${esc(S.setup.name)} — Lead schedule: ${tkLeadArea}</div>
+        <div class="text-[12px] text-mut">FYE ${dMY(S.setup.fye)} · Materiality ${fmtRM(mat.overall)} · PM ${fmtRM(mat.pm)}</div>
+      </div>
+      <table class="text-[11px]" style="border-collapse:collapse">
+        <tr><td class="border border-line px-3 py-1">Prepared by / date</td><td class="border border-line px-8 py-1"></td></tr>
+        <tr><td class="border border-line px-3 py-1">Reviewed by / date</td><td class="border border-line px-8 py-1"></td></tr>
+      </table>
+    </div>
+    <table class="tbl mt-4">
+      <thead><tr><th>Account</th><th>Classification</th><th class="num">CY (RM)</th><th class="num">PY (RM)</th><th class="num">Mvmt</th><th class="num">% of mat.</th></tr></thead>
+      <tbody>${trs || '<tr><td colspan="6" class="text-center text-mut py-4">No accounts in this area.</td></tr>'}</tbody>
+      <tfoot><tr class="font-semibold"><td class="!py-2">Total</td><td></td><td class="num mono">${fmt(tot,true)}</td><td class="num mono">${fmt(totPy,true)}</td><td></td><td></td></tr></tfoot>
+    </table>
+    <div class="mt-4 text-[12.5px]">
+      <div class="font-semibold mb-1">Procedures for this area:</div>
+      <ul class="list-disc pl-5 space-y-0.5">${procs.map(p => `<li>${p} <span class="text-mut mono">[&nbsp;&nbsp;]</span></li>`).join('')}</ul>
+    </div>
+    <div class="mt-3 text-[12px] text-mut">Evidence on file: see Evidence Vault. Conclusion: ______________________________________________</div>
+  </div>`;
+}
+/* rollforward */
+function tkRoll(el) {
+  const m = S.tb.length ? model() : null;
+  el.innerHTML = `
+  <div class="card card-pad max-w-2xl">
+    <h2 class="font-bold text-[15px] mb-1">Roll forward to next year</h2>
+    <p class="text-[13px] text-mut mb-4">Closes this file and opens next year's engagement in one click: closing balances become comparatives, retained earnings roll up automatically, setup and directors carry over. This year's file stays untouched.</p>
+    ${!m ? '<div class="text-mut text-[13px]">Import a trial balance first.</div>' : `
+    <table class="fs-doc" style="max-width:26rem">
+      <tr><td>Current FYE</td><td class="num">${dMY(S.setup.fye)}</td></tr>
+      <tr><td>New FYE</td><td class="num">${dMY(addMonths(S.setup.fye, 12))}</td></tr>
+      <tr><td>Closing retained earnings → opening</td><td class="num mono">${fmt(m.reClose)}</td></tr>
+      <tr><td>Accounts carried as comparatives</td><td class="num mono">${S.tb.length}</td></tr>
+    </table>
+    <button class="btn btn-pri mt-4" onclick="rollForward()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      Create ${S.setup.fye ? new Date(addMonths(S.setup.fye,12)).getFullYear() : 'next year'} engagement</button>`}
+  </div>`;
+}
+function rollForward() {
+  const src = S;
+  const m = model();
+  const c = Object.assign(BLANK(), { id:nid(), created:Date.now() });
+  c.setup = { ...src.setup, fye: addMonths(src.setup.fye, 12), firstaudit:'no' };
+  c.directors = src.directors.map(d => ({...d}));
+  c.intake = { ...src.intake };
+  c.notes = { ...src.notes };
+  c.sign = { ...BLANK().sign, firm:src.sign.firm, af:src.sign.af, partner:src.sign.partner, approval:src.sign.approval, place:src.sign.place };
+  // comparatives: every row's adjusted natural balance becomes PY
+  const adjByCat = {};
+  for (const a of src.adjustments) for (const e of a.entries) adjByCat[e.cat] = (adjByCat[e.cat]||0) + e.amt;
+  c.tb = src.tb.map(r => ({ id:nid(), name:r.name, cat:r.cat, dr:'', cr:'',
+    py: Math.round((num(r.dr) - num(r.cr)) * CAT[r.cat].side), autoWeak:false }));
+  // spread category-level adjustments onto the first row of each category
+  for (const [cat, amt] of Object.entries(adjByCat)) {
+    const row = c.tb.find(r => r.cat === cat);
+    const nat = Math.round(amt * CAT[cat].side);
+    if (row) row.py = num(row.py) + nat;
+    else c.tb.push({ id:nid(), name: CAT[cat].label + ' (b/f)', cat, dr:'', cr:'', py: nat, autoWeak:false });
+  }
+  DB.clients.push(c);
+  switchClient(c.id);
+  saveState();
+  toast(`Rolled forward — FYE ${dMY(c.setup.fye)} engagement created`);
+  show('setup');
+}
+/* export / import */
+function tkData(el) {
+  el.innerHTML = `
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 max-w-4xl">
+    <div class="card card-pad">
+      <h2 class="font-bold text-[15px] mb-1">Export this engagement</h2>
+      <p class="text-[12.5px] text-mut mb-3">Everything except vault files (those live in the browser's IndexedDB) — use for backup, or to move to another machine / the future Supabase backend.</p>
+      <button class="btn btn-pri" onclick="tkExport()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+        Download engagement JSON</button>
+    </div>
+    <div class="card card-pad">
+      <h2 class="font-bold text-[15px] mb-1">Import an engagement</h2>
+      <p class="text-[12.5px] text-mut mb-3">Restores a previously exported engagement as a new client file.</p>
+      <label class="btn btn-ghost cursor-pointer">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>
+        Choose JSON file<input type="file" accept=".json" class="hidden" onchange="tkImport(this)">
+      </label>
+    </div>
+  </div>`;
+}
+function tkExport() {
+  const data = JSON.stringify(S, null, 2);
+  const blob = new Blob([data], { type:'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `mr-auditor-${(S.setup.name||'engagement').replace(/[^\w]+/g,'-').toLowerCase()}-${S.setup.fye||''}.json`;
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+  toast('Engagement exported');
+}
+function tkImport(input) {
+  const f = input.files[0]; input.value = '';
+  if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    try {
+      const d = JSON.parse(rd.result);
+      if (!d.setup || !Array.isArray(d.tb)) { toast('Not a Mr Auditor engagement file'); return; }
+      const c = hydrate(d); c.id = nid(); c.created = Date.now();
+      DB.clients.push(c); switchClient(c.id); saveState();
+      toast(`${c.setup.name || 'Engagement'} imported`);
+      show('dashboard');
+    } catch(e) { toast('Could not read that file'); }
+  };
+  rd.readAsText(f);
+}
+
 /* ---------- reference ---------- */
 function renderRef() {
   const card = (title, body) => `<div class="card card-pad"><h2 class="font-bold text-[15px] mb-2">${title}</h2><div class="text-[13px] leading-relaxed space-y-2">${body}</div></div>`;
@@ -2046,4 +2515,4 @@ document.addEventListener('keydown', e => {
 });
 loadState();
 idbOpen().then(() => updateTop()).catch(() => {});
-render('dashboard');
+show('home');
