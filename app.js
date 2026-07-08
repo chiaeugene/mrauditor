@@ -2264,13 +2264,33 @@ function aiContext() {
     intake: S.intake,
   };
 }
+/* Renders the AI's markdown-ish text as HTML. Handles GFM-style tables
+   (header row + |---|---| separator) as real <table>s — before this, a
+   table the AI wrote came through as literal "|||" because the separator
+   row was neither stripped nor converted, just escaped and left on screen. */
 function aiFormat(t) {
-  return esc(t)
-    .replace(/^#{1,3} (.*)$/gm, '<span class="block font-bold text-[14px] mt-2">$1</span>')
-    .replace(/^---+$/gm, '<span class="block border-t border-line my-1"></span>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/^- (.*)$/gm, '<span class="block pl-3">• $1</span>')
-    .replace(/\n\n/g, '<br><br>').replace(/\n/g, '<br>');
+  const inline = s => esc(s).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  const lines = String(t ?? '').replace(/\r\n/g, '\n').split('\n');
+  const isRow = l => /^\s*\|.*\|\s*$/.test(l);
+  const isSep = l => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(l);
+  const cells = l => l.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+  let html = '', i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (isRow(line) && lines[i + 1] !== undefined && isSep(lines[i + 1])) {
+      const head = cells(line);
+      let j = i + 2; const rows = [];
+      while (j < lines.length && isRow(lines[j])) { rows.push(cells(lines[j])); j++; }
+      html += `<table class="tbl my-2"><thead><tr>${head.map(h => `<th>${inline(h)}</th>`).join('')}</tr></thead>`
+        + `<tbody>${rows.map(r => `<tr>${r.map(c => `<td>${inline(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+      i = j; continue;
+    }
+    if (/^#{1,3}\s+/.test(line)) { html += `<span class="block font-bold text-[14px] mt-2">${inline(line.replace(/^#{1,3}\s+/, ''))}</span>`; i++; continue; }
+    if (/^-{3,}\s*$/.test(line.trim())) { html += '<span class="block border-t border-line my-1"></span>'; i++; continue; }
+    if (/^[-*]\s+/.test(line)) { html += `<span class="block pl-3">• ${inline(line.replace(/^[-*]\s+/, ''))}</span>`; i++; continue; }
+    html += inline(line) + '<br>'; i++;
+  }
+  return html.replace(/(<br>){3,}/g, '<br><br>');
 }
 async function askAI() {
   const q = $('ask-input').value.trim();
