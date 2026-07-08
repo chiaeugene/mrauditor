@@ -161,14 +161,17 @@ const RULES = [
   [/term loan|bank loan|borrowing|loan payable|financing-i|financing i\b/i,'BORR'],
   [/deferred tax/i,'DEFTAX'],
   [/tax (payable|provision)|provision for tax|cp204 payable/i,'TAXPAY'],
-  [/tax(ation)? (expense|charge)|income tax\b/i,'TAXEXP'],
+  [/tax(ation)? (expense|charge)|income tax\b|^tax(ation)?\s*$/i,'TAXEXP'],
   [/share capital|paid[- ]?up|ordinary shares/i,'SC'],
   [/retained (earning|profit)|accumulated (loss|profit)|unappropriated/i,'RE'],
   [/dividend/i,'DIV'],
+  // remuneration/fees are P&L — must outrank the director-balance rule below
+  [/remuneration|director.{0,10}fee/i,'ADMIN'],
   [/director/i,'DIR*'],                      // resolved by side
   [/holding|subsidiar|associate|related (co|part)|inter-?co|sister co/i,'RPT*'],
   [/goodwill|intangible|software|trademark|patent|development cost/i,'INTANG'],
   [/investment/i,'INVEST'],
+  [/^(?!.*(inventor|stock))(?=.*(driver|tyre|tayar))/i,'COS'],  // vehicle-direct costs — but never a stock/inventory line
   [/upkeep|repair|maintenance|road tax|petrol|diesel|toll|parking/i,'ADMIN'],
   [/rent(al)? (of|expense|paid)|^rent\b|office rent|rent — |quit rent|assessment/i,'ADMIN'],
   [/motor vehicle|plant|machiner|equipment|furniture|fitting|renovation|computer(?!.*(expense|repair))|land|building|premises|signboard|air.?cond/i,'PPE'],
@@ -177,8 +180,8 @@ const RULES = [
   [/prepaym|deposit|sundry (receivable|debtor)|other receivable|staff advance|gst|sst (receivable|refund)/i,'OR'],
   [/petty cash|cash (in hand|at bank|and bank)|bank balance|\bcash\b|maybank|cimb|public bank|rhb|hong leong|ambank|uob|ocbc|bank islam|affin|alliance/i,'CASH'],
   [/trade payable|trade creditor|creditors?\b|account payable/i,'TP'],
-  [/accrual|accrued|other payable|sundry creditor|epf payable|socso payable|eis payable|pcb|salary payable|sst payable|deposit received/i,'OP'],
-  [/^sales\b|sales revenue|^revenue|turnover|jualan|service (income|revenue|fee)|contract revenue|project income/i,'REV'],
+  [/accrual|accrued|other payable|sundry creditor|epf payable|socso payable|eis payable|pcb|salary payable|(sst|service tax|sales tax).{0,8}payable|deposit received/i,'OP'],
+  [/^sales\b|sales revenue|^revenue|turnover|jualan|service (income|revenue|fee)|contract revenue|project income|(transport|haulage|freight|forwarding|trucking|logistic|courier|charter|delivery|rental of (lorr|truck|vehicle))[^,]{0,30}(income|revenue)|(income|revenue) from (transport|haulage|freight|deliver)/i,'REV'],
   [/purchase|cost of (sale|good)|direct (labour|labor|wage|cost)|subcontract|carriage inward|freight inward|opening stock|production/i,'COS'],
   [/advertis|marketing|promotion|commission paid|delivery|carriage outward|freight outward|exhibition/i,'SELL'],
   [/salar|wages|bonus|gaji|epf|kwsp|socso|perkeso|\beis\b|allowance|staff|medical/i,'ADMIN'],
@@ -192,7 +195,10 @@ function classify(name, drAmt, crAmt) {
       return cat;
     }
   }
-  // fallback: expenses if debit, payables if credit — flagged low-confidence by SUSP-adjacent styling
+  // fallback: expenses if debit, payables if credit — flagged low-confidence by SUSP-adjacent styling.
+  // Safety net: an unmatched CREDIT balance whose name says income/revenue must
+  // never be guessed as a liability — that flips the whole P&L.
+  if (crAmt > drAmt && /income|revenue|sales|takings|billings/i.test(name)) return 'REV';
   return drAmt >= crAmt ? 'ADMIN' : 'OP';
 }
 
@@ -1983,12 +1989,22 @@ async function vaultCount() { return (await vaultListRows(S.id)).length; }
 async function vaultUploadOne(file, cat, clientId) {
   if (!sb || !authUser) return false;
   const path = `${authUser.id}/${clientId}/${nid()}-${sanitizeName(file.name)}`;
-  const { error: upErr } = await sb.storage.from('evidence').upload(path, file, { contentType: file.type || undefined });
-  if (upErr) { console.error('vault upload failed', upErr); return false; }
+  // Supabase Storage throws transient 502/503s under bulk uploads (seen when
+  // filing a full evidence set in one go) — retry twice with backoff before
+  // reporting failure, so an auditor uploading 20 documents doesn't get
+  // spurious "Upload failed" toasts.
+  let upErr = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) await new Promise(r => setTimeout(r, 800 * attempt));
+    ({ error: upErr } = await sb.storage.from('evidence').upload(path, file, { contentType: file.type || undefined }));
+    if (!upErr) break;
+  }
+  if (upErr) { console.error('vault upload failed after retries', upErr); return false; }
   const { error: insErr } = await sb.from('evidence_files').insert({
     engagement_id: clientId, owner: authUser.id, category: cat,
     file_name: file.name, mime_type: file.type, size_bytes: file.size, storage_path: path });
-  if (insErr) { console.error('vault record failed', insErr); return false; }
+  if (insErr) { console.error('vault record failed', insErr);
+    await sb.storage.from('evidence').remove([path]).catch(()=>{}); return false; }
   return true;
 }
 async function vaultUpload(input) {
