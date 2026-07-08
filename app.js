@@ -458,6 +458,27 @@ function buildFindings() {
       'For an initial engagement the auditor must obtain evidence that opening balances do not contain material misstatements — often via the predecessor’s working papers or substantive work on openings.',
       'If prior year was unaudited/exempt, extend procedures to opening stock, receivables and payables; scope limitation here commonly drives a qualified opinion on comparability.');
 
+  // 21 — profitable year but no tax charge booked
+  if (m.pbt > 1000 && m.nat.TAXEXP < 0.5) {
+    const tc = taxComputeCore();
+    if (tc.tax > mat.trivial)
+      push('no-tax','high','Taxation','Profitable year but no taxation charge in the accounts',
+        'MPERS s.29 · ITA 1967',
+        `Profit before tax is ${fmtRM(m.pbt)} yet the TB carries no taxation charge — the FS would show profit after tax equal to PBT. Based on the tax computation (step 7: SME tiers, capital allowances ${fmtRM(tc.T('ca'))}, add-backs ${fmtRM(tc.addbacks)}), the charge should be ±${fmtRM(tc.tax)}. No reviewing partner signs a profitable FS with a nil tax line.`,
+        'Agree the tax computation inputs on the Tax screen (capital allowances, disallowables), then post the provision. The one-click adjustment below books the charge from that same computation.',
+        { desc:'Provide for current-year taxation per the tax computation',
+          entries:[ {cat:'TAXEXP', label:'Taxation', amt: tc.tax},
+                    {cat:'TAXPAY', label:'Current tax payable', amt: -tc.tax} ] },
+        tc.tax);
+  }
+
+  // 22 — prior-year comparatives don't articulate
+  if (mp && Math.abs(mp.balGap) > 1)
+    push('py-gap', Math.abs(mp.balGap) > mat.overall ? 'high' : 'medium','Books','Prior-year comparatives do not articulate',
+      'ISA 510 · ISA 710',
+      `The prior-year column's balance sheet is out by ${fmtRM(mp.balGap)} (assets − liabilities − equity). The comparative column of the FS will not balance, and opening balances cannot be relied on until it does.`,
+      'Re-agree every prior-year figure to the signed prior-year FS (enter each balance as a positive number as presented there; accumulated losses as a negative retained-earnings figure). If the prior year was unaudited, extend ISA 510 opening-balance procedures.');
+
   const sevRank = { blocker:0, high:1, medium:2, low:3, info:4 };
   F.sort((a,b) => sevRank[a.sev] - sevRank[b.sev]);
   return F;
@@ -693,6 +714,8 @@ function renderSetup() {
         onchange="S.directors[${i}].name=this.value; saveState()">
       <input class="field mono !w-44" value="${esc(d.ic)}" placeholder="NRIC"
         onchange="S.directors[${i}].ic=this.value; saveState()">
+      <input class="field mono !w-36" value="${esc(d.shares || '')}" placeholder="Shares held" title="Ordinary shares held per the register of directors' shareholdings (s.59 CA 2016) — feeds the Directors' Report"
+        onchange="S.directors[${i}].shares=this.value; saveState()">
       <button class="btn btn-ghost !px-2" onclick="S.directors.splice(${i},1); renderSetup(); saveState()" aria-label="Remove">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="#B91C1C" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
       </button>
@@ -1046,7 +1069,7 @@ function cashflowHTML(m, p) {
   const dWC = k => -( (m.nat[k]||0) - (p.nat[k]||0) );  // asset increase = outflow
   const dWCl = k => ( (m.nat[k]||0) - (p.nat[k]||0) );  // liability increase = inflow
   const ops = m.pbt + dep + m.fin
-    + dWC('INV') + dWC('TR') + dWC('OR') + dWC('DIRADV') + dWC('RPTREC')
+    + dWC('INV') + dWC('TR') + dWC('OR') + dWC('DIRADV') + dWC('RPTREC') + dWC('SUSP')
     + dWCl('TP') + dWCl('OP') + dWCl('DIROWE') + dWCl('RPTPAY');
   const taxPaid = -(p.nat.TAXPAY + m.taxexp - m.nat.TAXPAY);
   const capex = -((m.nat.PPE - p.nat.PPE));
@@ -1086,6 +1109,30 @@ function smeEligible() {
       { t:`≤ 20% foreign/corporate shareholding`, ok: S.setup.foreign !== 'yes', v: S.setup.foreign==='yes'?'Exceeded':'OK' }
     ]};
 }
+/* Shared tax-charge computation — used by the Tax screen AND the findings
+   engine (the "profitable year but no tax charge" finding books its
+   provision from this same math, so the two can never disagree). */
+function taxComputeCore() {
+  const m = model();
+  const sme = smeEligible();
+  const T = k => num(S.tax[k]);
+  const dep = m.nat.DEPR;
+  const dirAdvDeemed = m.nat.DIRADV > 0 ? Math.round(m.nat.DIRADV * 0.0295) : 0;
+  const addbacks = dep + T('entertain') + T('fines') + T('donations') + T('otherAdd') + dirAdvDeemed;
+  const adjusted = m.pbt + addbacks - T('exemptInc');
+  const afterCA = Math.max(adjusted - T('ca'), 0);
+  const ci = Math.max(afterCA - T('losses'), 0);
+  let tax = 0; const bands = [];
+  if (sme.ok) {
+    const b1 = Math.min(ci, 150000), b2 = Math.min(Math.max(ci-150000,0), 450000), b3 = Math.max(ci-600000, 0);
+    if (b1) bands.push(['First RM150,000 @ 15%', b1*.15]);
+    if (b2) bands.push(['Next RM450,000 @ 17%', b2*.17]);
+    if (b3) bands.push(['Balance @ 24%', b3*.24]);
+    tax = b1*.15 + b2*.17 + b3*.24;
+  } else { bands.push(['Chargeable income @ 24%', ci*.24]); tax = ci*.24; }
+  tax = Math.round(tax);
+  return { m, sme, T, dep, dirAdvDeemed, addbacks, adjusted, afterCA, ci, bands, tax };
+}
 function renderTax() {
   const m = model();
   $('tax-ya').textContent = S.setup.fye ? new Date(S.setup.fye).getFullYear() : '—';
@@ -1104,22 +1151,7 @@ function renderTax() {
       : 'Not eligible — flat 24% on all chargeable income.'}</div>`;
 
   if (!S.tb.length) { $('tax-comp').innerHTML = '<div class="text-mut text-[13px]">Import a trial balance first.</div>'; return; }
-  const T = k => num(S.tax[k]);
-  const dep = m.nat.DEPR;
-  const dirAdvDeemed = m.nat.DIRADV > 0 ? Math.round(m.nat.DIRADV * 0.0295) : 0;
-  const addbacks = dep + T('entertain') + T('fines') + T('donations') + T('otherAdd') + dirAdvDeemed;
-  const adjusted = m.pbt + addbacks - T('exemptInc');
-  const afterCA = Math.max(adjusted - T('ca'), 0);
-  const ci = Math.max(afterCA - T('losses'), 0);
-  let tax = 0; const bands = [];
-  if (sme.ok) {
-    const b1 = Math.min(ci, 150000), b2 = Math.min(Math.max(ci-150000,0), 450000), b3 = Math.max(ci-600000, 0);
-    if (b1) bands.push(['First RM150,000 @ 15%', b1*.15]);
-    if (b2) bands.push(['Next RM450,000 @ 17%', b2*.17]);
-    if (b3) bands.push(['Balance @ 24%', b3*.24]);
-    tax = b1*.15 + b2*.17 + b3*.24;
-  } else { bands.push(['Chargeable income @ 24%', ci*.24]); tax = ci*.24; }
-  tax = Math.round(tax);
+  const { T, dep, dirAdvDeemed, adjusted, afterCA, ci, bands, tax } = taxComputeCore();
   const cp204 = T('cp204');
   const bal = tax - cp204;
   const underEst = cp204 > 0 && tax > 0 && (tax - cp204) / tax > 0.30;
@@ -1298,7 +1330,14 @@ function repDirectorsHTML() {
       <p>The directors in office since the beginning of the financial year to the date of this report are:</p>
       ${S.directors.length ? '<p>' + S.directors.map(d => esc(d.name).toUpperCase()).join('<br>') + '</p>' : '<p>[Directors’ names]</p>'}
       <h3>Directors' interests</h3>
-      <p>According to the register of directors' shareholdings, the interests of directors in office at the end of the financial year in shares of the Company are as disclosed therein. [Complete from the register — s.59 CA 2016.]</p>
+      ${S.directors.some(d => num(d.shares) > 0) ? `
+      <p>According to the register of directors' shareholdings kept under section 59 of the Companies Act 2016, the interests of directors in office at the end of the financial year in shares of the Company were as follows:</p>
+      <table class="fs-doc" style="width:70%">
+        <tr><td></td><td class="num font-semibold">Number of ordinary shares</td></tr>
+        ${S.directors.filter(d => num(d.shares) > 0).map(d => `<tr><td>${esc(d.name).toUpperCase()}</td><td class="num">${fmt(num(d.shares))}</td></tr>`).join('')}
+      </table>
+      <p>None of the other directors in office at the end of the financial year had any interest in shares of the Company during the financial year.</p>`
+      : `<p>According to the register of directors' shareholdings, the interests of directors in office at the end of the financial year in shares of the Company are as disclosed therein. [Complete from the register — s.59 CA 2016, or enter each director's shareholding on the Engagement Setup screen.]</p>`}
       <h3>Directors' benefits</h3>
       <p>Since the end of the previous financial year, no director has received or become entitled to receive any benefit (other than a benefit included in the aggregate amount of remuneration received or due and receivable by directors as disclosed in the financial statements) by reason of a contract made by the Company with the director or with a firm of which the director is a member, or with a company in which the director has a substantial financial interest.</p>
       <h3>Other statutory information</h3>
@@ -2164,11 +2203,7 @@ function accountIntel(row) {
   const varPct = py ? (cy - py) / Math.abs(py) * 100 : null;
   const matPct = mat.overall ? Math.abs(cy) / mat.overall * 100 : 0;
   const kb = KB[row.cat] || {a:'—', t:'No specific guidance — classify this account correctly first.', p:['Review classification']};
-  const findingCats = { 'dir-adv':['DIRADV'], 'no-depr':['PPE','ACCDEP','DEPR'], 'accdep-exceeds':['PPE','ACCDEP'],
-    'neg-cash':['CASH','OD'], 'rec-days':['TR','REV'], 'inv-days':['INV','COS'], 'neg-gp':['REV','COS'], 'gp-swing':['REV','COS'],
-    'rpt-disc':['RPTREC','RPTPAY','DIROWE','DIRADV'], 'no-interest':['BORR','HP','OD','FIN'], 'interest-no-loan':['FIN'],
-    'fd-no-int':['FD'], 'no-epf':['ADMIN','OP'], 'suspense':['SUSP'], 'illegal-div':['DIV','RE'] };
-  const related = S.tb.length ? evaluate().open.filter(f => (findingCats[f.id]||[]).includes(row.cat)) : [];
+  const related = S.tb.length ? evaluate().open.filter(f => (WP_FINDING_CATS[f.id]||[]).includes(row.cat)) : [];
   return { row, cy, py, varPct, matPct, kb, related, mat };
 }
 function intelCardHTML(row) {
@@ -3032,7 +3067,7 @@ const WP_COMPL = [
 ];
 const WP_AREAS = [
   ['C','Cash & bank',['CASH','FD'],'Bank statements & confirmations'],
-  ['D','Trade & other receivables',['TR','OR'],'Sales & receivables evidence'],
+  ['D','Trade & other receivables',['TR','OR','SUSP'],'Sales & receivables evidence'],
   ['E','Inventories',['INV'],'Inventory count sheets'],
   ['F','PPE & intangibles',['PPE','ACCDEP','INTANG'],'Fixed asset register & invoices'],
   ['G','Investments',['INVEST'],'Agreements & facility letters'],
@@ -3050,7 +3085,7 @@ const WP_FINDING_CATS = { 'dir-adv':['DIRADV'], 'no-depr':['PPE','ACCDEP','DEPR'
   'neg-cash':['CASH','OD'], 'rec-days':['TR','REV'], 'inv-days':['INV','COS'], 'neg-gp':['REV','COS'], 'gp-swing':['REV','COS'],
   'rpt-disc':['RPTREC','RPTPAY','DIROWE','DIRADV'], 'no-interest':['BORR','HP','OD','FIN'], 'interest-no-loan':['FIN'],
   'fd-no-int':['FD'], 'no-epf':['ADMIN','OP'], 'suspense':['SUSP'], 'illegal-div':['DIV','RE'], 'neg-equity':['SC','RE'],
-  'sst':['REV'], 'einvoice':['REV'] };
+  'sst':['REV'], 'einvoice':['REV'], 'no-tax':['TAXEXP','TAXPAY'], 'py-gap':['RE'] };
 
 let curWp = 'A2';
 /* dotted-path state helpers so every paper input persists with one attribute */
@@ -3068,13 +3103,16 @@ function wpStatus(ref) {
 function wpAreaFigures(cats) {
   const m = S.tb.length ? model() : null;
   if (!m) return { rows: [], tot: 0, totPy: 0, gross: 0 };
+  // Contra accounts display negated within their host schedule so the total
+  // ties to the FS carrying amount (PPE cost − acc dep = NBV; equity − dividends).
+  const flip = c => ((c === 'ACCDEP' && cats.includes('PPE')) || (c === 'DIV' && cats.includes('SC'))) ? -1 : 1;
   const rows = S.tb.filter(r => cats.includes(r.cat)).map(r => {
-    const cy = (num(r.dr) - num(r.cr)) * CAT[r.cat].side, py = num(r.py);
+    const cy = (num(r.dr) - num(r.cr)) * CAT[r.cat].side * flip(r.cat), py = num(r.py) * flip(r.cat);
     return { name: r.name, cat: r.cat, cy, py, mv: py ? (cy - py) / Math.abs(py) * 100 : null };
   });
   // include category-level audit adjustments so the WP ties to the adjusted TB / FS
   const adj = {};
-  for (const a of S.adjustments) for (const e of a.entries) if (cats.includes(e.cat)) adj[e.cat] = (adj[e.cat] || 0) + e.amt * CAT[e.cat].side;
+  for (const a of S.adjustments) for (const e of a.entries) if (cats.includes(e.cat)) adj[e.cat] = (adj[e.cat] || 0) + e.amt * CAT[e.cat].side * flip(e.cat);
   for (const [cat, amt] of Object.entries(adj)) rows.push({ name: CAT[cat].label + ' (audit adjustments)', cat, cy: amt, py: 0, mv: null, isAdj: true });
   const tot = rows.reduce((s, r) => s + r.cy, 0), totPy = rows.reduce((s, r) => s + r.py, 0);
   const gross = rows.reduce((s, r) => s + Math.abs(r.cy), 0);
@@ -3453,6 +3491,24 @@ function smpRowSet(ref, i, field, val) { S.samples[ref].rows[i][field] = val; sa
 function smpRowDel(ref, i) { S.samples[ref].rows.splice(i, 1); saveState(); wpShow(ref); }
 async function wpLead([ref, title, cats, evCat]) {
   const fig = wpAreaFigures(cats);
+  // Equity schedule: TB only carries share capital + RE b/f — the current-year
+  // profit lives in the P&L rows, so add it here or the total can never tie
+  // to the FS equity figure.
+  if (ref === 'L' && S.tb.length) {
+    const mm = model();
+    const pyPat = hasPY() ? model(true).pat : 0;
+    fig.rows.push({ name:'Profit for the year (per adjusted TB)', cat:'RE', cy: mm.pat, py: pyPat, mv:null, isAdj:true });
+    fig.tot += mm.pat; fig.totPy += pyPat;
+  }
+  // Does this schedule land on a single FS destination? If not, the footer
+  // must not claim a single tie-out that doesn't exist.
+  const dests = new Set(cats.map(c => {
+    if (c === 'ACCDEP') return 'asset'; if (c === 'DIV') return 'equity';
+    if (['SC','RE'].includes(c)) return 'equity';
+    if (CAT[c].kind === 'pl') return CAT[c].side === -1 ? 'income' : 'expense';
+    return CAT[c].side === 1 ? 'asset' : 'liability';
+  }));
+  const tiesToFs = dests.size === 1;
   const mat = materiality();
   const risk = wpAreaRisk(ref, cats, fig.gross);
   const smp = S.samples[ref] || { rows: [] };
@@ -3493,8 +3549,8 @@ async function wpLead([ref, title, cats, evCat]) {
       <tbody>${fig.rows.map(r => `<tr class="${r.isAdj ? 'text-indigo' : ''}"><td>${esc(r.name)}</td><td class="num mono">${fmt(r.cy, true)}</td>
         <td class="num mono text-mut">${fmt(r.py, true)}</td>
         <td class="num mono ${r.mv !== null && Math.abs(r.mv) > 25 ? 'text-warn font-semibold' : ''}">${r.mv === null ? '–' : (r.mv > 0 ? '+' : '') + r.mv.toFixed(0) + '%'}</td></tr>`).join('')}
-      </tbody><tfoot><tr class="font-semibold"><td>Total — agrees to the financial statements</td><td class="num mono">${fmt(fig.tot, true)}</td><td class="num mono">${fmt(fig.totPy, true)}</td><td></td></tr></tfoot></table>
-      <p class="text-[11.5px] text-mut mb-3">Wired live from the adjusted trial balance — this total flows into the statements and the notes automatically, so the tie-out cannot break.</p>`
+      </tbody><tfoot><tr class="font-semibold"><td>${tiesToFs ? 'Total — agrees to the financial statements' : 'Net per schedule — components tie to separate FS lines (not netted in the FS)'}</td><td class="num mono">${fmt(fig.tot, true)}</td><td class="num mono">${fmt(fig.totPy, true)}</td><td></td></tr></tfoot></table>
+      <p class="text-[11.5px] text-mut mb-3">${tiesToFs ? 'Wired live from the adjusted trial balance — this total flows into the statements and the notes automatically, so the tie-out cannot break.' : 'Wired live from the adjusted trial balance. This schedule spans more than one FS caption — each component ties to its own line; the net figure here is for the working paper only.'}</p>`
       : '<p class="text-[13px] text-mut mb-3">No accounts classified to this area on the current TB.</p>'}
     ${risk.hits.length ? `<div class="text-[13px] mb-3"><span class="font-semibold">Open findings on this area:</span>
       <ul class="list-disc pl-5 mt-1">${risk.hits.map(f => `<li>${f.title} <span class="pill ${['blocker','high'].includes(f.sev) ? 'pill-risk' : f.sev === 'medium' ? 'pill-warn' : 'pill-info'}">${f.sev}</span></li>`).join('')}</ul></div>` : ''}
@@ -3828,11 +3884,11 @@ async function loadDemo() {
     incdate:'2019-03-12', fye:`${fyeYear}-12-31`, activity:'operation of a restaurant and catering services',
     framework:'MPERS', capital:'300000', employees:'16', firstaudit:'no', foreign:'no',
     address:'No. 12, Jalan SS2/61, 47300 Petaling Jaya, Selangor' };
-  S.directors = [ {name:'Pang Tze Onn', ic:'800505-14-5011'}, {name:'Lim Mei Fong', ic:'850912-10-6244'} ];
+  S.directors = [ {name:'Pang Tze Onn', ic:'800505-14-5011', shares:'180000'}, {name:'Lim Mei Fong', ic:'850912-10-6244', shares:'120000'} ];
   S.intake = { finperson:'Pang Tze Onn', contact:'Lim Mei Fong', email:'accounts@tpo.my', phone:'+60 12-338 8112',
     prevauditor:'', software:'SQL Account', banks:'Maybank (CA + term loan), CIMB (CA), Public Bank (FD)',
     borrowings:'yes', sst:'yes', einvoice:'no', bookkeeping:'average',
-    risknotes:'Mostly cash & card sales through POS; director takes advances; kitchen renovation done 2 years ago.' };
+    risknotes:'Mostly cash & card sales through POS; director takes advances; kitchen renovation done 2 years ago. Pandemic-era accumulated losses now recovering — director support of RM618k partly repaid during the year.' };
   const rows = [
     // name, dr, cr, py(natural magnitude)
     ['Sales — restaurant', 0, 2845000, 2510000],
@@ -3869,7 +3925,7 @@ async function loadDemo() {
     ['Trade payables', 0, 156700, 141800],
     ['Accruals and other payables', 0, 48300, 44100],
     ['SST payable', 0, 14300, 12600],
-    ['Amount owing to director', 0, 180000, 240000],
+    ['Amount owing to director', 0, 180000, 618550],
     ['Term loan — Maybank', 0, 285000, 342000],
     ['Hire purchase payables', 0, 64500, 92000],
     ['Provision for taxation', 0, 38000, 31000],
@@ -3877,14 +3933,21 @@ async function loadDemo() {
   ];
   let dr = 0, cr = 0;
   for (const [name, d, cc] of rows) { dr += d; cr += cc; }
-  // retained earnings b/f as the balancing figure (credit if dr>cr)
+  // retained earnings b/f as the balancing figure (credit if dr>cr).
+  // PY value: accumulated losses at the START of the prior year, chosen so the
+  // PY column articulates AND rolls forward (RE b/f CY = RE b/f PY + PY profit).
   const rePlug = dr - cr;
-  rows.push(['Retained earnings b/f', rePlug < 0 ? -rePlug : 0, rePlug > 0 ? rePlug : 0, 168000]);
+  rows.push(['Retained earnings b/f', rePlug < 0 ? -rePlug : 0, rePlug > 0 ? rePlug : 0, -1144450]);
   S.tb = rows.map(([name, d, cc, py]) => {
     const cat = classify(name, d, cc);
     return { id:nid(), name, cat, dr: d||'', cr: cc||'', py: py||'', autoWeak: !RULES.some(([re])=>re.test(name)) };
   });
   S.tax = Object.assign(BLANK().tax, { entertain:'6400', fines:'2400', ca:'52000', cp204:'60000' });
+  // note details consistent with the mock vault documents, so a fresh demo
+  // pack renders with zero unresolved placeholders
+  S.notes = { termsGiven:'30 days', termsRecd:'30 to 60 days', deprRates:'10% to 20% (straight-line)',
+    fdRate:'2.60%', borrSec:'a first legal charge over the shop-lot premises and the directors’ joint and several guarantee',
+    borrRate:'4.75%', hpCurrent:'27500', auditFee:'12000', dirRem:'186000' };
   S.sign = Object.assign(BLANK().sign, { place:'Petaling Jaya', date: dISO(new Date()) });
   saveState();
   if (sb && authUser) await cloudPushEngagement(c);
@@ -3997,9 +4060,12 @@ Term: 3 years from 01/01/${fy-1}, monthly rent RM 18,000 (RM 216,000/yr)
 Deposit held: RM 54,000 (3 months) — see Deposits & prepayments.`],
     ['Prior-year FS & working papers', `TPO-audited-FS-FYE${fy-1}-summary.txt`,
 `TPO SDN BHD — Audited Financial Statements FYE 31/12/${fy-1} (extract)
-Auditors: KL Wong & Co PLT (AF 002211) — unmodified opinion dated 30/05/${fy}
-Revenue: RM 2,652,000 | PBT: RM 402,300 | Total assets: RM 1,190,000
-Retained earnings c/f: RM 168,000 (= opening RE for FY${fy})
+Auditors: KL Wong & Co PLT (AF 002211) — unmodified opinion with a Material
+Uncertainty Related to Going Concern paragraph, dated 30/05/${fy}
+(pandemic-era accumulated losses; directors confirmed continued support)
+Revenue: RM 2,652,000 | PBT: RM 489,500 | Total assets: RM 927,100
+Accumulated losses c/f: RM (654,950) (= opening RE for FY${fy})
+Amount owing to director at FYE: RM 618,550
 Full signed copy in permanent file.`],
   ];
 }
