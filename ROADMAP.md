@@ -152,10 +152,19 @@ specific client demand.
 **Status (09.07.2026): F2, F3, F4 shipped** (commit `db29ca7`) — Queries/PBC screen, evidence
 tick-marking, append-only activity trail, and document intelligence (the AI now reads actual
 filed evidence natively via Claude's PDF/image support, not just filenames — with an explicit
-`skipped[]` report so nothing is silently dropped). **Two dashboard steps still needed before
-these work live:** run `supabase-schema-round2.sql` in the SQL editor (adds `activity_log`,
-`evidence_ticks`, `queries` tables), and redeploy the `ask-mr-auditor` edge function. F1
-(multi-user roles) remains the next big structural gap.
+`skipped[]` report so nothing is silently dropped). Round-2 schema and edge function are
+deployed and verified live.
+
+**Status (10.07.2026): F1, F8, F9 shipped.** F1 — engagement teams: invite colleagues by
+email (staff/manager/partner), RLS opens the whole engagement (file, vault, ticks, queries,
+trail) to them, working papers lock on review and only a manager/partner can reopen; requires
+`supabase-schema-round3.sql`. F8 — bank statement line matcher: CSV statements parse locally,
+PDF/photo statements are extracted line-by-line by the AI, every line rule-classified with
+one-click "raise as query" on flagged lines (director transfers, weekend debits) and one-click
+feed into the bank-in completeness test. F9 — Form C (e-C) preparation sheet: the box-by-box
+data sheet for MyTax e-Filing straight from the adjusted TB and tax computation, printable.
+Remaining gaps: F5 consolidation, F6 opening-balance workflow, F7 engagement economics, F10
+OCR beyond what native AI reading already covers.
 
 ---
 

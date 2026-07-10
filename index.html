@@ -381,10 +381,11 @@ tailwind.config = {
       <div class="flex flex-wrap gap-2 mb-5 no-print" id="tk-tabs">
         <button class="btn btn-pri tk-tab" data-tk="ca">Capital allowances</button>
         <button class="btn btn-ghost tk-tab" data-tk="confirm">Confirmation letters</button>
-        <button class="btn btn-ghost tk-tab" data-tk="bankin">Bank-in reconciliation</button>
+        <button class="btn btn-ghost tk-tab" data-tk="bankin">Bank statement matcher</button>
         <button class="btn btn-ghost tk-tab" data-tk="lead">Lead schedules</button>
         <button class="btn btn-ghost tk-tab" data-tk="roll">Roll forward</button>
         <button class="btn btn-ghost tk-tab" data-tk="mbrs">MBRS / SSM export</button>
+        <button class="btn btn-ghost tk-tab" data-tk="formc">Form C prep</button>
         <button class="btn btn-ghost tk-tab" data-tk="data">Export / import</button>
       </div>
       <div id="tk-render"></div>
@@ -491,6 +492,11 @@ tailwind.config = {
         </div>
 
         <div class="space-y-4">
+          <div class="card card-pad">
+            <h2 class="font-bold text-[15px] mb-1">Engagement team</h2>
+            <p class="text-[12px] text-mut mb-3">Share this file with colleagues — staff prepare, managers review &amp; lock papers, partners sign.</p>
+            <div id="team-box"><div class="text-[12.5px] text-mut">Loading…</div></div>
+          </div>
           <div class="card card-pad">
             <h2 class="font-bold text-[15px] mb-1">Audit exemption check</h2>
             <p class="text-[12px] text-mut mb-3">Practice Directive 10/2024 — phased thresholds; qualify on any 2 of 3 criteria for the current + two preceding financial years.</p>

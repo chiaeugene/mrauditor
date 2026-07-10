@@ -34,6 +34,7 @@ const BLANK = () => ({
   intake: {},             // registration-wizard audit profile
   caAssets: [],           // capital allowance schedule rows
   bankin: {},             // bank-in reconciliation inputs
+  bankmatch: null,        // parsed bank-statement lines {srcName, rows:[{date,desc,dr,cr,cls}]}
   plan: {},               // planning-paper answers: materiality questionnaire, risk notes, checklists
   wpSign: {},             // per-working-paper sign-off { ref: {prep, prepDate, rev, revDate, concl} }
   samples: {},            // per-area sampling & testing { ref: {pop, keyAmt, risk, rows:[...]} }
@@ -713,6 +714,7 @@ function renderSetup() {
   set('f-name',s.name); set('f-regno',s.regno); set('f-incdate',s.incdate); set('f-fye',s.fye);
   set('f-activity',s.activity); set('f-framework',s.framework); set('f-capital',s.capital);
   set('f-employees',s.employees); set('f-firstaudit',s.firstaudit); set('f-foreign',s.foreign); set('f-address',s.address);
+  renderTeam().catch(()=>{});
 
   $('directors-list').innerHTML = S.directors.map((d,i) => `
     <div class="flex gap-2 items-center">
@@ -1850,6 +1852,82 @@ function renderActivity(el) {
   });
 }
 
+/* ---------- engagement team & roles (F1) ---------- */
+/* The owner invites colleagues by email; RLS opens the engagement to that
+   email once its owner has run supabase-schema-round3.sql. Roles gate the
+   review-locking behaviour in-app: a working paper signed as reviewed is
+   locked, and only a manager/partner can reopen it. */
+async function teamList(clientId) {
+  if (!sb || !authUser) return [];
+  const { data, error } = await sb.from('engagement_members').select('*').eq('engagement_id', clientId).order('created_at');
+  return error ? [] : data;
+}
+function amOwner() { return !S._owner || S._owner === (authUser && authUser.id); }
+function myRole() {
+  if (amOwner()) return 'partner';
+  const me = (S._members || []).find(m => authUser && m.member_email.toLowerCase() === (authUser.email || '').toLowerCase());
+  return me ? me.role : 'staff';
+}
+const ROLE_PILL = { staff:'pill-mut', manager:'pill-info', partner:'pill-ok' };
+async function teamAdd() {
+  const email = $('team-email').value.trim().toLowerCase();
+  const role = $('team-role').value;
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { toast('Enter a valid email address'); return; }
+  const { error } = await sb.from('engagement_members').insert({
+    engagement_id: S.id, member_email: email, role, added_by: authUser.id });
+  if (error) {
+    toast(/duplicate/i.test(error.message) ? 'Already on the team' :
+      /relation .* does not exist|schema cache/i.test(error.message) ? 'Team tables not set up yet — run supabase-schema-round3.sql' : 'Could not add — ' + error.message);
+    return;
+  }
+  logActivity('Added team member', `${email} as ${role}`);
+  $('team-email').value = '';
+  renderTeam();
+}
+async function teamRemove(id, email) {
+  if (!confirm(`Remove ${email} from this engagement?`)) return;
+  const { error } = await sb.from('engagement_members').delete().eq('id', id);
+  if (error) { toast('Could not remove'); return; }
+  logActivity('Removed team member', email);
+  renderTeam();
+}
+async function teamSetRole(id, email, role) {
+  const { error } = await sb.from('engagement_members').update({ role }).eq('id', id);
+  if (error) { toast('Could not change role'); return; }
+  logActivity('Changed team role', `${email} → ${role}`);
+  renderTeam();
+}
+async function renderTeam() {
+  const box = $('team-box'); if (!box) return;
+  const members = await teamList(S.id);
+  S._members = members;
+  const owner = amOwner();
+  box.innerHTML = `
+    <div class="flex items-center gap-2 mb-2 text-[12.5px]">
+      <span class="pill ${ROLE_PILL[myRole()]}">you: ${owner ? 'owner / partner' : myRole()}</span>
+      ${!owner ? '<span class="text-mut">shared with you — the owner manages the team</span>' : ''}
+    </div>
+    ${members.map(m => `
+      <div class="flex items-center gap-2 py-1.5 border-b border-line/60 last:border-0 text-[12.5px]">
+        <span class="truncate flex-1">${esc(m.member_email)}</span>
+        ${owner ? `<select class="field !py-1 !w-28 !text-[12px]" onchange="teamSetRole('${m.id}','${esc(m.member_email)}',this.value)">
+          ${['staff','manager','partner'].map(r => `<option ${m.role===r?'selected':''}>${r}</option>`).join('')}
+        </select>
+        <button class="btn btn-ghost !px-1.5 !py-1" onclick="teamRemove('${m.id}','${esc(m.member_email)}')" aria-label="Remove">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#B91C1C" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>` : `<span class="pill ${ROLE_PILL[m.role]}">${m.role}</span>`}
+      </div>`).join('') || '<div class="text-[12.5px] text-mut py-1">No team members yet — this file is visible only to you.</div>'}
+    ${owner ? `
+    <div class="flex flex-wrap gap-2 mt-3">
+      <input class="field flex-1 !min-w-[180px]" id="team-email" placeholder="colleague@firm.my" type="email">
+      <select class="field !w-28" id="team-role">
+        <option value="staff">staff</option><option value="manager">manager</option><option value="partner">partner</option>
+      </select>
+      <button class="btn btn-pri" onclick="teamAdd()">Invite</button>
+    </div>
+    <p class="text-[11.5px] text-mut mt-2">They sign in (or sign up) with that email and this engagement appears in their list — staff prepare, managers review and lock papers, partners sign. Every action is logged to the activity trail under the actor's own email.</p>` : ''}`;
+}
+
 /* ---------- Query / PBC log (F2) ---------- */
 /* One table (`queries`), distinguished by kind: 'pbc' (prepared-by-client
    requests, generated from what's still outstanding in the vault) or
@@ -2562,7 +2640,75 @@ function renderToolkit() {
   if (tkTab === 'lead') return tkLead(el);
   if (tkTab === 'roll') return tkRoll(el);
   if (tkTab === 'mbrs') return tkMbrs(el);
+  if (tkTab === 'formc') return tkFormC(el);
   if (tkTab === 'data') return tkData(el);
+}
+/* ---------- Form C (e-C) prep sheet (F9) ---------- */
+/* LHDN accepts Form C only through MyTax e-Filing — nothing can lodge it for
+   you. What eats the tax preparer's time is assembling the numbers. This
+   sheet lays out every figure the e-C asks for, straight from the audited,
+   adjusted TB and the tax computation, in the order the form asks for them. */
+function tkFormC(el) {
+  if (!S.tb.length) { el.innerHTML = '<div class="card card-pad text-mut text-[13px]">Import a trial balance first.</div>'; return; }
+  const tc = taxComputeCore();
+  const m = tc.m;
+  const ya = S.setup.fye ? new Date(S.setup.fye).getFullYear() : '—';
+  const cp204 = tc.T('cp204');
+  const bal = tc.tax - cp204;
+  const basisStart = S.setup.fye ? dMY(addDays(addMonths(S.setup.fye, -12), 1)) : '[start]';
+  const row = (ref, label, val, opt={}) => `<tr class="${opt.total?'fs-total':opt.line?'fs-line':''}">
+    <td class="mono text-[11px] text-mut" style="width:70px">${ref}</td>
+    <td class="${opt.indent?'pl-5':''}">${label}</td>
+    <td class="num mono" style="width:130px">${typeof val === 'number' ? fmt(val, true) : esc(String(val))}</td></tr>`;
+  el.innerHTML = `
+  <div class="card card-pad no-print mb-4 flex items-start justify-between gap-3 flex-wrap">
+    <div>
+      <h2 class="font-bold text-[15px] mb-1">Form C (e-C) preparation sheet — YA ${ya}</h2>
+      <p class="text-[12.5px] text-mut max-w-2xl">Every figure below flows live from the adjusted trial balance and the step-7 tax computation. Lodgement itself happens in <strong>MyTax e-Filing</strong> (s.77A: within 7 months of FYE) — this sheet is what you keep on file and key in. Refine the CA, add-backs and losses on the Tax screen first; this sheet follows automatically.</p>
+    </div>
+    <button class="btn btn-pri" onclick="window.print()">Print / PDF</button>
+  </div>
+  <div class="fs-doc">
+    <div class="text-center mb-4">
+      <div class="font-bold text-[16px]">${esc(S.setup.name) || '[Company]'}</div>
+      <div class="text-[12.5px]">Form e-C data sheet — Year of Assessment ${ya}</div>
+      <div class="text-[11.5px] text-mut">Basis period: ${basisStart} – ${dMY(S.setup.fye)} · prepared from the audited figures</div>
+    </div>
+    <table class="fs-doc" style="width:100%">
+      <tr><td colspan="3" class="font-semibold pt-1">Part: Company particulars</td></tr>
+      ${row('—','Company name', S.setup.name || '[name]')}
+      ${row('—','Registration no. (SSM)', S.setup.regno || '[regno]')}
+      ${row('—','Tax identification no. (TIN)', '[C ____________ — from LHDN records]')}
+      ${row('—','Basis period', `${basisStart} – ${dMY(S.setup.fye)}`)}
+      ${row('—','SME status (para 2A Sch 1: cap ≤RM2.5m, gross ≤RM50m)', tc.sme.ok ? 'YES — tiered 15/17/24%' : 'NO — flat 24%')}
+      <tr><td colspan="3" class="font-semibold pt-3">Part: Statutory income from business</td></tr>
+      ${row('C1','Profit/(loss) before taxation per audited FS', m.pbt)}
+      ${row('+','Depreciation (book)', tc.dep, {indent:1})}
+      ${tc.T('entertain') ? row('+','Entertainment — 50% disallowed (s.39(1)(l))', tc.T('entertain'), {indent:1}) : ''}
+      ${tc.T('fines') ? row('+','Fines & penalties', tc.T('fines'), {indent:1}) : ''}
+      ${tc.T('donations') ? row('+','Unapproved donations', tc.T('donations'), {indent:1}) : ''}
+      ${tc.T('otherAdd') ? row('+','Other add-backs', tc.T('otherAdd'), {indent:1}) : ''}
+      ${tc.dirAdvDeemed ? row('+','s.140B deemed interest on advances to directors', tc.dirAdvDeemed, {indent:1}) : ''}
+      ${tc.T('exemptInc') ? row('−','Non-taxable / exempt income', -tc.T('exemptInc'), {indent:1}) : ''}
+      ${row('','Adjusted income', tc.adjusted, {line:1})}
+      ${row('−','Capital allowances absorbed (Sch 3 — per CA schedule)', -tc.T('ca'), {indent:1})}
+      ${row('','Statutory business income', tc.afterCA, {line:1})}
+      ${tc.T('losses') ? row('−','Unabsorbed business losses b/f (s.44(2), 10-YA limit)', -tc.T('losses'), {indent:1}) : ''}
+      ${row('','CHARGEABLE INCOME', tc.ci, {total:1})}
+      <tr><td colspan="3" class="font-semibold pt-3">Part: Tax computation</td></tr>
+      ${tc.bands.map(b => row('', b[0], Math.round(b[1]), {indent:1})).join('')}
+      ${row('','TAX CHARGEABLE', tc.tax, {total:1})}
+      ${cp204 ? row('−','CP204 instalments paid for YA ' + ya, -cp204, {indent:1}) : ''}
+      ${cp204 ? row('', bal >= 0 ? 'Balance of tax payable (due with the return)' : 'Tax overpaid — refund position', bal, {line:1}) : ''}
+      <tr><td colspan="3" class="font-semibold pt-3">Part: Declarations & attachments checklist</td></tr>
+      ${row('☐','Audited financial statements finalised & signed before filing', S.sign.partner ? 'partner named: ' + S.sign.partner : '[pending sign-off]')}
+      ${row('☐','CP204 for the NEXT YA submitted (30 days before basis period)', '[check e-CP204]')}
+      ${row('☐','Transfer pricing documentation (if related-party transactions ≥ thresholds)', (m.nat.RPTREC + m.nat.RPTPAY + m.nat.DIRADV + m.nat.DIROWE) > 0 ? 'RPT balances exist — confirm TP position' : 'n/a on the face of the TB')}
+      ${row('☐','MyInvois e-invoicing compliance declared where applicable', '')}
+      ${row('☐','Filed via MyTax by ' + (S.setup.fye ? dMY(addMonths(S.setup.fye, 7)) : '[FYE + 7 months]'), '')}
+    </table>
+    <p class="text-[11px] text-mut mt-3">Prepared by Mr Auditor from the adjusted trial balance — verify against the signed tax computation before e-Filing. s.140B deemed interest shown is indicative (average lending rate proxy); use the prescribed rate for the YA.</p>
+  </div>`;
 }
 /* capital allowance schedule */
 function caCompute(a) {
@@ -2671,7 +2817,121 @@ function tkConfirm(el) {
     </div>
   </div>`;
 }
-/* bank-in reconciliation */
+/* ---------- bank statement line matcher (F8) + bank-in reconciliation ---------- */
+/* Parses a bank statement (CSV/text locally; PDF/photo via the AI document
+   reader), classifies every line by rule, reconciles customer receipts
+   against recorded revenue, and pushes flagged lines straight into the
+   query log. The classification is a starting point the auditor edits —
+   the engine never silently decides what a transaction is. */
+const BM_CLASSES = ['customer receipt','other credit','supplier payment','payroll','statutory (EPF/SOCSO/LHDN)',
+  'financing (loan/HP)','director','rent','fuel/fleet','bank charges','internal transfer','unclassified'];
+function bmClassify(desc, isCredit) {
+  const d = String(desc || '').toLowerCase();
+  const dirNames = S.directors.flatMap(x => (x.name || '').toLowerCase().split(/\s+/).filter(w => w.length > 3));
+  if (/balance (b\/f|c\/f)|brought forward|carried forward/.test(d)) return null; // not a transaction
+  if (/director/.test(d) || dirNames.some(n => d.includes(n))) return 'director';
+  if (/epf|kwsp|socso|perkeso|\beis\b|lhdn|pcb\b|cukai|kastam|customs|sst\b/.test(d)) return 'statutory (EPF/SOCSO/LHDN)';
+  if (/hire purchase|\bhp\b|instal|term loan|loan (repay|instal)|financ/.test(d)) return 'financing (loan/HP)';
+  if (/payroll|salar|gaji|wages|bonus/.test(d)) return 'payroll';
+  if (/rental|tenanc|\brent\b/.test(d)) return 'rent';
+  if (/petron|shell|petronas|caltex|fleet|diesel|fuel/.test(d)) return 'fuel/fleet';
+  if (/transfer to (own|fd)|sweep|fixed deposit placement|to fd\b/.test(d)) return 'internal transfer';
+  if (/bank charge|service charge|commission|\bfee\b|interest charge/.test(d)) return 'bank charges';
+  if (isCredit) return /ibg cr|inward|receipt|payment (from|recd)|deposit|collection|cr -/.test(d) ? 'customer receipt' : 'customer receipt';
+  return 'supplier payment';
+}
+function bmParseText(text) {
+  // header-aware CSV/tab parser; falls back to date+amount line scanning
+  const lines = String(text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  let cols = null; const rows = [];
+  for (const line of lines) {
+    const parts = line.split(/\t|,(?=(?:[^"]*"[^"]*")*[^"]*$)/).map(p => p.replace(/^"|"$/g, '').trim());
+    const lower = parts.map(p => p.toLowerCase());
+    if (!cols && lower.some(p => /^date/.test(p)) && lower.some(p => /debit|credit|amount/.test(p))) {
+      cols = { date: lower.findIndex(p => /^date/.test(p)), desc: lower.findIndex(p => /desc|particular|transaction/.test(p)),
+        dr: lower.findIndex(p => /debit/.test(p)), cr: lower.findIndex(p => /credit/.test(p)) };
+      continue;
+    }
+    const dateM = line.match(/\b(\d{1,2}\/\d{1,2}\/\d{2,4})\b/);
+    if (!dateM) continue;
+    // statement headers carry dates too ("Period: 01/12/2025 - ...") — never transactions
+    if (/account\s*:|period\s*:|statement|page \d/i.test(line)) continue;
+    let desc, dr = 0, cr = 0;
+    if (cols) {
+      desc = parts[cols.desc >= 0 ? cols.desc : 1] || '';
+      dr = cols.dr >= 0 ? num(parts[cols.dr]) : 0;
+      cr = cols.cr >= 0 ? num(parts[cols.cr]) : 0;
+    } else {
+      desc = parts.filter(p => !/^\d[\d,.\/]*$/.test(p) && p !== dateM[1]).join(' ');
+      const nums = parts.map(num).filter(n => n > 0 && n < 100000000); // account numbers are not amounts
+      if (!nums.length) continue;
+      cr = nums[0]; // single-amount fallback: treated as credits (bank-in use case)
+    }
+    if (!dr && !cr) continue;
+    const cls = bmClassify(desc, cr > 0);
+    if (cls === null) continue;
+    rows.push({ date: dateM[1], desc, dr, cr, cls });
+  }
+  return rows;
+}
+function bmIsWeekend(dstr) {
+  const m = String(dstr).match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/); if (!m) return false;
+  const y = m[3].length === 2 ? '20' + m[3] : m[3];
+  const day = new Date(`${y}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}T00:00:00`).getDay();
+  return day === 0 || day === 6;
+}
+async function bmLoadVaultFile(id) {
+  const rowMeta = (await vaultListRows(S.id)).find(f => f.id === id);
+  if (!rowMeta) { toast('File not found'); return; }
+  const isText = /\.(csv|txt)$/i.test(rowMeta.file_name) || /^text\//.test(rowMeta.mime_type || '');
+  const st = $('bm-status');
+  if (st) st.textContent = isText ? 'Parsing…' : 'AI is reading the statement — every line, ±60 seconds…';
+  try {
+    let rows;
+    if (isText) {
+      const { data, error } = await sb.storage.from('evidence').download(rowMeta.storage_path);
+      if (error) throw new Error('could not download the file');
+      rows = bmParseText(await data.text());
+    } else {
+      const r = await aiRequestDocs(
+        'Extract EVERY transaction line from this bank statement as a JSON array and output ONLY the JSON, no commentary: [{"date":"dd/mm/yyyy","desc":"...","dr":0,"cr":0}] where dr is the debit amount and cr the credit amount in plain numbers. Include every line, skip only balance b/f and c/f rows.', [id]);
+      const mJson = r.answer.match(/\[[\s\S]*\]/);
+      if (!mJson) throw new Error('AI did not return a parseable line listing — open the file and paste the lines instead');
+      rows = JSON.parse(mJson[0]).map(x => ({ date: x.date, desc: x.desc, dr: num(x.dr), cr: num(x.cr), cls: bmClassify(x.desc, num(x.cr) > 0) }))
+        .filter(x => x.cls !== null && (x.dr || x.cr));
+    }
+    if (!rows.length) throw new Error('no transaction lines recognised');
+    S.bankmatch = { srcName: rowMeta.file_name, rows };
+    saveState();
+    logActivity('Matched bank statement lines', `${rowMeta.file_name} — ${rows.length} line(s)`);
+    renderToolkit();
+  } catch (e) {
+    const st2 = $('bm-status');
+    if (st2) st2.textContent = 'Could not read: ' + (e.message || 'unknown error');
+    else toast('Could not read: ' + (e.message || 'unknown error'));
+  }
+}
+function bmPaste() {
+  const rows = bmParseText($('bm-paste').value);
+  if (!rows.length) { toast('No lines with a date and an amount found'); return; }
+  S.bankmatch = { srcName: 'pasted statement', rows };
+  saveState(); renderToolkit();
+}
+function bmSetCls(i, v) { S.bankmatch.rows[i].cls = v; saveState(); renderToolkit(); }
+async function bmRaiseQuery(i) {
+  const r = S.bankmatch.rows[i];
+  await queryAdd('query', `Bank statement (${S.bankmatch.srcName}) ${r.date}: "${r.desc}" ${r.dr ? 'DR ' + fmt(r.dr) : 'CR ' + fmt(r.cr)} — please explain the nature of this transaction and provide supporting documents.`, null, 'C');
+  toast('Raised in the query log');
+}
+function bmPushToTest() {
+  const rows = (S.bankmatch || {}).rows || [];
+  const credits = rows.reduce((s, r) => s + r.cr, 0);
+  const nonSales = rows.filter(r => r.cr && r.cls !== 'customer receipt').reduce((s, r) => s + r.cr, 0);
+  S.bankin.credits = String(Math.round(num(S.bankin.credits) + credits));
+  S.bankin.nonSales = String(Math.round(num(S.bankin.nonSales) + nonSales));
+  saveState(); renderToolkit();
+  toast(`Added ${fmtRM(credits)} credits (${fmtRM(nonSales)} non-sales) to the bank-in test`);
+}
 function tkBankin(el) {
   const m = S.tb.length ? model() : null;
   const b = S.bankin || {};
@@ -2682,31 +2942,85 @@ function tkBankin(el) {
   const gapPct = recorded ? gap / recorded * 100 : 0;
   const verdict = !credits ? null : Math.abs(gapPct) <= 5 ? ['pill-ok','Within 5% — reasonable'] :
     Math.abs(gapPct) <= 15 ? ['pill-warn','5–15% gap — obtain explanations'] : ['pill-risk','>15% gap — revenue completeness risk'];
+  const bm = S.bankmatch || {};
+  const bmRows = bm.rows || [];
+  const bmCr = bmRows.reduce((s,r)=>s+r.cr,0), bmDr = bmRows.reduce((s,r)=>s+r.dr,0);
+  const byCls = {};
+  for (const r of bmRows) byCls[r.cls] = (byCls[r.cls]||0) + r.cr + r.dr;
+  const flagged = bmRows.map((r,i)=>({...r,i})).filter(r => r.cls === 'director' || r.cls === 'unclassified' || (bmIsWeekend(r.date) && r.dr > 0));
+  bankmatchHTML(el, { m, b, credits, nonSales, netBankIn, recorded, gap, gapPct, verdict, bm, bmRows, bmCr, bmDr, byCls, flagged });
+}
+async function bankmatchHTML(el, v) {
+  let vaultOpts = '';
+  try {
+    const files = (await vaultListRows(S.id)).filter(f => f.category === 'Bank statements & confirmations');
+    vaultOpts = files.map(f => `<option value="${f.id}">${esc(f.file_name)}</option>`).join('');
+  } catch(e) {}
   el.innerHTML = `
+  <div class="card card-pad mb-4">
+    <h2 class="font-bold text-[15px] mb-1">Bank statement line matcher</h2>
+    <p class="text-[12.5px] text-mut mb-3">Pick a statement from the vault (CSV parses instantly; PDF and photos are read line-by-line by the AI) or paste lines. Every transaction is classified — correct any line, push the totals into the bank-in test below, and raise flagged lines as queries with one click.</p>
+    <div class="flex flex-wrap items-end gap-2 mb-2 no-print">
+      ${vaultOpts ? `<div><label class="fieldlbl">From the evidence vault</label>
+        <select class="field !w-72" id="bm-vault">${vaultOpts}</select></div>
+      <button class="btn btn-pri" onclick="bmLoadVaultFile($('bm-vault').value)">Read &amp; match</button>` :
+      '<span class="text-[12.5px] text-mut">No files under “Bank statements &amp; confirmations” yet — upload to the vault, or paste below.</span>'}
+      <span id="bm-status" class="text-[12px] text-mut"></span>
+    </div>
+    <details class="mb-2"><summary class="text-[12.5px] text-indigo cursor-pointer">…or paste statement lines</summary>
+      <textarea class="field mono !text-[12px] mt-2" id="bm-paste" rows="5" placeholder="01/12/2025, IBG CR - CUSTOMER SB, , 48200.00${'\n'}05/12/2025, FLEET CARD SETTLEMENT, 231800.00, "></textarea>
+      <button class="btn btn-ghost mt-2" onclick="bmPaste()">Parse pasted lines</button>
+    </details>
+    ${v.bmRows.length ? `
+    <div class="flex flex-wrap gap-2 items-center mb-2">
+      <span class="pill pill-info">${esc(v.bm.srcName)} · ${v.bmRows.length} lines</span>
+      <span class="pill pill-ok mono">credits ${fmtRM(v.bmCr)}</span>
+      <span class="pill pill-mut mono">debits ${fmtRM(v.bmDr)}</span>
+      ${v.flagged.length ? `<span class="pill pill-warn">${v.flagged.length} flagged</span>` : ''}
+      <button class="btn btn-mint !py-1.5 !text-[12px] ml-auto" onclick="bmPushToTest()">Add credits to the bank-in test ↓</button>
+    </div>
+    <div style="max-height:340px;overflow-y:auto">
+    <table class="tbl"><thead><tr><th>Date</th><th>Description</th><th class="num">DR</th><th class="num">CR</th><th>Classified as</th><th></th></tr></thead>
+    <tbody>${v.bmRows.map((r,i) => {
+      const flag = r.cls === 'director' || r.cls === 'unclassified' || (bmIsWeekend(r.date) && r.dr > 0);
+      return `<tr class="${flag ? 'bg-warnbg/40' : ''}">
+        <td class="mono text-[11px]">${esc(r.date)}${bmIsWeekend(r.date) ? ' <span class="pill pill-warn !text-[9px]">w/e</span>' : ''}</td>
+        <td class="text-[12px]">${esc(r.desc)}</td>
+        <td class="num mono text-[12px]">${r.dr ? fmt(r.dr) : ''}</td>
+        <td class="num mono text-[12px]">${r.cr ? fmt(r.cr) : ''}</td>
+        <td><select class="field !py-0.5 !text-[11.5px] !w-44" onchange="bmSetCls(${i}, this.value)">
+          ${BM_CLASSES.map(c => `<option ${r.cls===c?'selected':''}>${c}</option>`).join('')}</select></td>
+        <td>${flag ? `<button class="btn btn-ghost !py-0.5 !px-1.5 !text-[11px]" onclick="bmRaiseQuery(${i})">Raise query</button>` : ''}</td>
+      </tr>`; }).join('')}</tbody></table></div>
+    <div class="flex flex-wrap gap-1.5 mt-2">${Object.entries(v.byCls).sort((a,b)=>b[1]-a[1]).map(([c,amt]) =>
+      `<span class="pill pill-mut !text-[11px] mono">${c}: ${fmtRM(amt)}</span>`).join('')}</div>` : ''}
+  </div>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <div class="card card-pad">
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
     <div class="card card-pad">
       <h2 class="font-bold text-[15px] mb-1">Bank-in vs recorded revenue</h2>
-      <p class="text-[12.5px] text-mut mb-4">The 老板 test: total credits into ALL bank accounts should explain recorded revenue. Paste the credit column from the bank statements (one amount per line) or enter the year's total.</p>
+      <p class="text-[12.5px] text-mut mb-4">The 老板 test: total credits into ALL bank accounts should explain recorded revenue. Feed it from the line matcher above, paste the credit column, or enter the year's total.</p>
       <label class="fieldlbl">Paste credit amounts (one per line)</label>
       <textarea class="field mono !text-[12px]" id="bk-paste" rows="6" placeholder="12,500.00&#10;8,340.50&#10;..."></textarea>
       <button class="btn btn-ghost mt-2 mb-4" onclick="const t=$('bk-paste').value.split(/\\n/).map(x=>num(x)).filter(x=>x>0).reduce((s,x)=>s+x,0); S.bankin.credits=String(Math.round(t)); saveState(); renderToolkit()">Sum the paste → total</button>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div><label class="fieldlbl">Total bank credits for the year (RM)</label><input class="field mono" value="${b.credits?fmt(num(b.credits)):''}" onchange="S.bankin.credits=this.value; saveState(); renderToolkit()"></div>
-        <div><label class="fieldlbl">Less: non-sales credits (transfers, loans, capital)</label><input class="field mono" value="${b.nonSales?fmt(num(b.nonSales)):''}" onchange="S.bankin.nonSales=this.value; saveState(); renderToolkit()"></div>
+        <div><label class="fieldlbl">Total bank credits for the year (RM)</label><input class="field mono" value="${v.b.credits?fmt(num(v.b.credits)):''}" onchange="S.bankin.credits=this.value; saveState(); renderToolkit()"></div>
+        <div><label class="fieldlbl">Less: non-sales credits (transfers, loans, capital)</label><input class="field mono" value="${v.b.nonSales?fmt(num(v.b.nonSales)):''}" onchange="S.bankin.nonSales=this.value; saveState(); renderToolkit()"></div>
       </div>
     </div>
     <div class="card card-pad">
       <h2 class="font-bold text-[15px] mb-3">Verdict</h2>
-      ${!m ? '<div class="text-mut text-[13px]">Import a trial balance first.</div>' : `
+      ${!v.m ? '<div class="text-mut text-[13px]">Import a trial balance first.</div>' : `
       <table class="fs-doc" style="width:100%">
-        <tr><td>Total bank credits</td><td class="num" style="width:130px">${fmt(credits, true)}</td></tr>
-        <tr><td>Less: non-sales credits</td><td class="num">${fmt(-nonSales, true)}</td></tr>
-        <tr class="fs-line"><td>Net business bank-in</td><td class="num">${fmt(netBankIn, true)}</td></tr>
-        <tr><td>Recorded revenue + other income</td><td class="num">${fmt(recorded, true)}</td></tr>
-        <tr class="fs-total"><td>Gap ${credits ? '(' + gapPct.toFixed(1) + '%)' : ''}</td><td class="num">${fmt(gap, true)}</td></tr>
+        <tr><td>Total bank credits</td><td class="num" style="width:130px">${fmt(v.credits, true)}</td></tr>
+        <tr><td>Less: non-sales credits</td><td class="num">${fmt(-v.nonSales, true)}</td></tr>
+        <tr class="fs-line"><td>Net business bank-in</td><td class="num">${fmt(v.netBankIn, true)}</td></tr>
+        <tr><td>Recorded revenue + other income</td><td class="num">${fmt(v.recorded, true)}</td></tr>
+        <tr class="fs-total"><td>Gap ${v.credits ? '(' + v.gapPct.toFixed(1) + '%)' : ''}</td><td class="num">${fmt(v.gap, true)}</td></tr>
       </table>
-      ${verdict ? `<div class="mt-4 flex items-center gap-2"><span class="pill ${verdict[0]} !text-[13px] !px-3 !py-1">${verdict[1]}</span></div>
-      <p class="text-[12.5px] text-mut mt-3">${gap > 0 ? 'Bank-in exceeds recorded income — possible unrecorded revenue (or unidentified non-sales credits). Trace the largest unexplained deposits.' : gap < 0 ? 'Recorded income exceeds bank-in — cash sales not banked in, receivables uncollected, or revenue overstated. Tie to the receivables movement.' : ''}</p>` : '<p class="text-mut text-[13px] mt-2">Enter the bank credits to get the verdict.</p>'}`}
+      ${v.verdict ? `<div class="mt-4 flex items-center gap-2"><span class="pill ${v.verdict[0]} !text-[13px] !px-3 !py-1">${v.verdict[1]}</span></div>
+      <p class="text-[12.5px] text-mut mt-3">${v.gap > 0 ? 'Bank-in exceeds recorded income — possible unrecorded revenue (or unidentified non-sales credits). Trace the largest unexplained deposits.' : v.gap < 0 ? 'Recorded income exceeds bank-in — cash sales not banked in, receivables uncollected, or revenue overstated. Tie to the receivables movement.' : ''}</p>` : '<p class="text-mut text-[13px] mt-2">Enter the bank credits to get the verdict.</p>'}`}
     </div>
   </div>`;
 }
@@ -3145,6 +3459,8 @@ function wpAreaRisk(ref, cats, gross) {
 /* shared paper chrome: header + body + conclusion/sign-off */
 function wpChrome(ref, title, isa, body) {
   const s = (S.wpSign || {})[ref] || {};
+  const locked = !!s.rev;                       // reviewed = locked
+  const canReview = ['manager','partner'].includes(myRole());
   return `
   <div class="fs-doc">
     <div class="flex items-start justify-between flex-wrap gap-2 border-b border-line pb-3 mb-4">
@@ -3152,8 +3468,15 @@ function wpChrome(ref, title, isa, body) {
         <div class="font-bold text-[16px]">${esc(S.setup.name) || '[Client]'} — ${title}</div>
         <div class="text-[12px] text-mut">FYE ${dMY(S.setup.fye)} · ${isa} · Prepared by Mr Auditor engine, reviewed by the engagement team</div>
       </div>
-      <span class="pill pill-mut mono !text-[13px]">${ref}</span>
+      <span class="pill ${locked ? 'pill-ok' : 'pill-mut'} mono !text-[13px]">${ref}${locked ? ' · locked' : ''}</span>
     </div>
+    ${locked ? `<div class="flex items-center gap-2 rounded-xl bg-okbg text-ok text-[12.5px] font-medium px-3 py-2 mb-4">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+      Reviewed by ${esc(s.rev)}${s.revDate ? ' on ' + dMY(s.revDate) : ''} — this paper is locked.
+      ${canReview ? `<button class="btn btn-ghost !py-1 !px-2 !text-[11.5px] ml-auto" onclick="wpReopen('${ref}')">Reopen for editing</button>`
+        : '<span class="ml-auto text-[11.5px] font-normal">ask a manager or partner to reopen it</span>'}
+    </div>` : ''}
+    <fieldset ${locked ? 'disabled' : ''} class="border-0 m-0 p-0 min-w-0">
     ${body}
     <div class="mt-6 border-t border-line pt-4">
       <label class="fieldlbl">Conclusion</label>
@@ -3162,11 +3485,27 @@ function wpChrome(ref, title, isa, body) {
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
         <div><label class="fieldlbl">Prepared by</label><input class="field !py-1.5" value="${esc(s.prep || '')}" onchange="wpSet('wpSign.${ref}.prep', this.value)"></div>
         <div><label class="fieldlbl">Date</label><input class="field mono !py-1.5" type="date" value="${esc(s.prepDate || '')}" onchange="wpSet('wpSign.${ref}.prepDate', this.value)"></div>
-        <div><label class="fieldlbl">Reviewed by</label><input class="field !py-1.5" value="${esc(s.rev || '')}" onchange="wpSet('wpSign.${ref}.rev', this.value)"></div>
-        <div><label class="fieldlbl">Date</label><input class="field mono !py-1.5" type="date" value="${esc(s.revDate || '')}" onchange="wpSet('wpSign.${ref}.revDate', this.value)"></div>
       </div>
+    </fieldset>
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
+      <div><label class="fieldlbl">Reviewed by ${canReview ? '' : '<span class="text-mut">(manager/partner only)</span>'}</label>
+        <input class="field !py-1.5" value="${esc(s.rev || '')}" ${canReview && !locked ? '' : 'disabled'} onchange="wpReview('${ref}', this.value)"></div>
+      <div><label class="fieldlbl">Date</label><input class="field mono !py-1.5" type="date" value="${esc(s.revDate || '')}" ${canReview && !locked ? '' : 'disabled'} onchange="wpSet('wpSign.${ref}.revDate', this.value)"></div>
     </div>
   </div>`;
+}
+function wpReview(ref, name) {
+  wpSet(`wpSign.${ref}.rev`, name);
+  if (name && !wpGet(`wpSign.${ref}.revDate`, '')) wpSet(`wpSign.${ref}.revDate`, dISO(new Date()));
+  if (name) { logActivity('Reviewed & locked working paper', ref + ' by ' + name); toast(`${ref} reviewed — paper locked`); }
+  wpShow(ref);
+}
+function wpReopen(ref) {
+  if (!confirm(`Reopen ${ref} for editing? The review signature will be cleared and the reopening is logged.`)) return;
+  const prev = wpGet(`wpSign.${ref}.rev`, '');
+  wpSet(`wpSign.${ref}.rev`, ''); wpSet(`wpSign.${ref}.revDate`, '');
+  logActivity('Reopened working paper', `${ref} (was reviewed by ${prev})`);
+  wpShow(ref);
 }
 function wpChecklist(ref, items) {
   return items.map((it, i) => {
@@ -3846,11 +4185,18 @@ function hydrate(d) {
 const _cloudTimers = {};
 async function cloudPushEngagement(client) {
   if (!sb || !authUser) return;
-  const { error } = await sb.from('engagements').upsert({
-    id: client.id, owner: authUser.id, name: client.setup.name || '',
-    fye: client.setup.fye || null, data: client
-  });
-  if (error) console.error('cloud save failed', error);
+  // Update-then-insert rather than upsert: a shared engagement is saved by a
+  // team member who is NOT the owner, and the update payload must never carry
+  // the owner column (RLS would reject it, and a member must not be able to
+  // claim ownership).
+  const { _owner, _members, ...persistable } = client;
+  const payload = { name: client.setup.name || '', fye: client.setup.fye || null, data: persistable };
+  const { data, error } = await sb.from('engagements').update(payload).eq('id', client.id).select('id');
+  if (error) { console.error('cloud save failed', error); return; }
+  if (!data || !data.length) {
+    const { error: insErr } = await sb.from('engagements').insert({ id: client.id, owner: authUser.id, ...payload });
+    if (insErr) console.error('cloud save failed', insErr);
+  }
 }
 async function cloudDeleteEngagement(id) {
   if (!sb || !authUser) return;
@@ -3859,9 +4205,10 @@ async function cloudDeleteEngagement(id) {
 }
 async function cloudLoadEngagements() {
   if (!sb || !authUser) return [];
-  const { data, error } = await sb.from('engagements').select('id,data').eq('owner', authUser.id).order('created_at', { ascending:true });
+  // No owner filter — RLS returns engagements I own plus ones shared with me.
+  const { data, error } = await sb.from('engagements').select('id,owner,data').order('created_at', { ascending:true });
   if (error || !data) return [];
-  return data.map(row => { const c = hydrate(row.data); c.id = row.id; return c; });
+  return data.map(row => { const c = hydrate(row.data); c.id = row.id; c._owner = row.owner; return c; });
 }
 
 /* ---------- reset ---------- */
