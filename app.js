@@ -35,6 +35,7 @@ const BLANK = () => ({
   caAssets: [],           // capital allowance schedule rows
   bankin: {},             // bank-in reconciliation inputs
   bankmatch: null,        // parsed bank-statement lines {srcName, rows:[{date,desc,dr,cr,cls}]}
+  archive: null,          // ISA 230 file archival {state:'final'|'reopened', finalisedBy, finalisedAt, events:[]}
   plan: {},               // planning-paper answers: materiality questionnaire, risk notes, checklists
   wpSign: {},             // per-working-paper sign-off { ref: {prep, prepDate, rev, revDate, concl} }
   samples: {},            // per-area sampling & testing { ref: {pop, keyAmt, risk, rows:[...]} }
@@ -550,6 +551,8 @@ function deadlines() {
     const nextStart = addDays(fye, 1);
     out.push({ label:'CP204 estimate for next YA', law:'s.107C — 30 days before basis period', date:addDays(nextStart, -30), noPast:true });
   }
+  if (S.sign && S.sign.date && !isArchived())
+    out.push({ label:'Assemble & finalise the audit file', law:'ISA 230 — 60 days after report date', date:addDays(S.sign.date, 60) });
   if (inc) {
     const now = new Date();
     const anniv = new Date(inc + 'T00:00:00'); anniv.setFullYear(now.getFullYear());
@@ -583,7 +586,8 @@ function deadlinesHTML() {
 const TITLES = { home:'Mr Auditor', register:'Register a company', dashboard:'Dashboard', setup:'Engagement Setup', tb:'Trial Balance',
   audit:'Audit Engine', wps:'Audit File — Working Papers', fs:'Financial Statements', tax:'Tax Computation',
   reports:'Reports & Sign-off', pack:'Full Audit Pack', vault:'Evidence Vault', toolkit:'Auditor Toolkit',
-  defence:'Defence & Positions', ref:'Regulatory Compass', queries:'Queries, PBC & Audit Trail' };
+  defence:'Defence & Positions', ref:'Regulatory Compass', queries:'Queries, PBC & Audit Trail',
+  compliance:'Compliance & Data' };
 let current = 'dashboard';
 function show(scr) {
   current = scr;
@@ -604,7 +608,8 @@ function render(scr = current) {
   updateTop();
   ({ home:renderHome, register:renderRegister, dashboard:renderDashboard, setup:renderSetup, tb:renderTB, audit:renderAudit,
      wps:renderWps, fs:renderFS, tax:renderTax, reports:renderReports, pack:renderPack, vault:renderVault,
-     toolkit:renderToolkit, defence:renderDefence, ref:renderRef, queries:renderQueriesScreen }[scr])();
+     toolkit:renderToolkit, defence:renderDefence, ref:renderRef, queries:renderQueriesScreen,
+     compliance:renderCompliance }[scr])();
 }
 function updateTop() {
   $('top-sub').textContent = S.setup.name
@@ -613,6 +618,7 @@ function updateTop() {
   vaultCount().then(n => { _vaultN = n;
     document.querySelectorAll('#nav-vault-count').forEach(el => el.textContent = n); }).catch(()=>{});
   const st = $('top-status');
+  if (isArchived()) { st.className='pill pill-info'; st.textContent='Archived (read-only)'; return; }
   if (!S.tb.length) { st.className='pill pill-mut'; st.textContent='Not started'; return; }
   const ev = evaluate();
   const blockers = ev.open.filter(f=>f.sev==='blocker').length;
@@ -804,12 +810,14 @@ function tbEdit(i, k, v) {
   if (k === 'cat') S.tb[i].autoWeak = false;
   renderTB(); saveState();
 }
-function addTbRow(){ S.tb.push({id:nid(), name:'', cat:'ADMIN', dr:'', cr:'', py:'', autoWeak:false}); renderTB(); }
-function clearTb(){ if (!S.tb.length || confirm('Remove all trial balance rows and posted adjustments?'))
+function addTbRow(){ if (guardArchived()) return; S.tb.push({id:nid(), name:'', cat:'ADMIN', dr:'', cr:'', py:'', autoWeak:false}); renderTB(); }
+function clearTb(){ if (guardArchived()) return;
+  if (!S.tb.length || confirm('Remove all trial balance rows and posted adjustments?'))
   { S.tb = []; S.adjustments = []; S.findingStatus = {}; renderTB(); saveState(); } }
 
 /* Shared TB import core: takes an array of cell-arrays [name, n1, n2, n3] */
 function importRows(rowArrays) {
+  if (guardArchived()) return 0;
   let added = 0, skipped = 0;
   for (const parts of rowArrays) {
     if (!parts || parts.length < 2) { skipped++; continue; }
@@ -964,6 +972,7 @@ function renderAudit() {
   renderAje();
 }
 function postAdj(fid) {
+  if (guardArchived()) return;
   const f = buildFindings().find(x => x.id === fid);
   if (!f || !f.adj) return;
   S.adjustments.push({ id:nid(), findingId:fid, desc:f.adj.desc, entries:f.adj.entries });
@@ -972,9 +981,11 @@ function postAdj(fid) {
   toast('Adjustment posted — FS updated');
   logActivity('Posted adjustment', `${f.title}: ${f.adj.desc}`);
 }
-function noteFinding(fid){ const f = buildFindings().find(x=>x.id===fid); S.findingStatus[fid]='noted'; saveState(); renderAudit(); updateTop();
+function noteFinding(fid){ if (guardArchived()) return;
+  const f = buildFindings().find(x=>x.id===fid); S.findingStatus[fid]='noted'; saveState(); renderAudit(); updateTop();
   logActivity('Marked finding as noted', f ? f.title : fid); }
-function reopenFinding(fid){ const f = buildFindings().find(x=>x.id===fid); delete S.findingStatus[fid];
+function reopenFinding(fid){ if (guardArchived()) return;
+  const f = buildFindings().find(x=>x.id===fid); delete S.findingStatus[fid];
   S.adjustments = S.adjustments.filter(a => a.findingId !== fid);
   saveState(); renderAudit(); updateTop();
   logActivity('Reopened finding', f ? f.title : fid); }
@@ -1229,6 +1240,8 @@ function renderReports() {
   set('s-firm',s.firm); set('s-af',s.af); set('s-partner',s.partner); set('s-approval',s.approval);
   set('s-place',s.place); set('s-date',s.date); set('s-opinion',s.opinion);
   set('s-goingconcern',s.goingconcern); set('s-otherinfo',s.otherinfo);
+  document.querySelectorAll('.rep-in').forEach(el => el.disabled = isArchived());
+  renderArchiveBox();
   const ev = S.tb.length ? evaluate() : null;
   $('opinion-reco').innerHTML = ev ? `
     <div class="text-[12px] text-mut mb-1">Engine recommendation:</div>
@@ -1738,6 +1751,7 @@ function renderAjeDraft() {
 function ajeUpd(i,k,v){ ajeDraft[i][k] = (k==='cat') ? v : (num(v)||''); renderAjeDraft(); }
 function ajeAddRow(){ ajeDraft.push({cat:'ADMIN', dr:'', cr:''}); renderAjeDraft(); }
 function ajePost() {
+  if (guardArchived()) return;
   const desc = $('aje-desc').value.trim();
   const lines = ajeDraft.filter(r => num(r.dr) || num(r.cr));
   const dr = lines.reduce((s,r)=>s+num(r.dr),0), cr = lines.reduce((s,r)=>s+num(r.cr),0);
@@ -1928,6 +1942,186 @@ async function renderTeam() {
     <p class="text-[11.5px] text-mut mt-2">They sign in (or sign up) with that email and this engagement appears in their list — staff prepare, managers review and lock papers, partners sign. Every action is logged to the activity trail under the actor's own email.</p>` : ''}`;
 }
 
+/* ---------- finalise & archive the audit file (ISA 230) ---------- */
+/* Once the report is signed, the partner finalises the file: the whole
+   engagement becomes read-only (like a reviewed working paper, but
+   file-wide), the assembly date is stamped, and the 7-year retention
+   clock starts. Reopening requires a typed reason and is logged to the
+   append-only trail — exactly what ISA 230.13-16 asks for. */
+function isArchived() { return !!(S.archive && S.archive.state === 'final'); }
+let _archToastAt = 0;
+function guardArchived() {
+  if (!isArchived()) return false;
+  if (Date.now() - _archToastAt > 3000) { toast('This file is finalised & archived — reopen it (Reports screen) to make changes'); _archToastAt = Date.now(); }
+  return true;
+}
+async function finaliseFile() {
+  if (myRole() !== 'partner') { toast('Only the engagement partner (or file owner) can finalise the file'); return; }
+  if (!S.sign.partner || !S.sign.date) { toast('Sign the report first — partner name and report date are required'); return; }
+  if (!confirm(`Finalise and archive the audit file for ${S.setup.name}?\n\nThe entire engagement becomes read-only. Reopening requires a documented reason and is logged permanently.`)) return;
+  const ev = { type:'finalised', by: authUser ? authUser.email : 'unknown', at: new Date().toISOString() };
+  S.archive = { state:'final', finalisedBy: ev.by, finalisedAt: ev.at,
+    events: [...(S.archive && S.archive.events || []), ev] };
+  await cloudPushEngagement(S);      // direct push — saveState is guarded once archived
+  try { localStorage.setItem('mr-auditor-v2', JSON.stringify(DB)); } catch(e) {}
+  logActivity('Finalised & archived the audit file', `report dated ${dMY(S.sign.date)}; retain to ${dMY(dISO(addYears7(S.archive.finalisedAt)))}`);
+  toast('File finalised & archived');
+  render(current); updateTop();
+}
+function addYears7(iso) { const d = new Date(iso); d.setFullYear(d.getFullYear() + 7); return d; }
+async function reopenFile() {
+  if (myRole() !== 'partner') { toast('Only the engagement partner (or file owner) can reopen an archived file'); return; }
+  const reason = prompt('ISA 230 requires the reason for modifying an assembled file to be documented.\n\nReason for reopening:');
+  if (!reason || !reason.trim()) { toast('Reopening cancelled — a reason is required'); return; }
+  const ev = { type:'reopened', by: authUser ? authUser.email : 'unknown', at: new Date().toISOString(), reason: reason.trim() };
+  S.archive = { ...S.archive, state:'reopened', events: [...(S.archive.events || []), ev] };
+  await cloudPushEngagement(S);
+  try { localStorage.setItem('mr-auditor-v2', JSON.stringify(DB)); } catch(e) {}
+  logActivity('Reopened archived audit file', reason.trim());
+  toast('File reopened — remember to re-finalise when done');
+  render(current); updateTop();
+}
+function renderArchiveBox() {
+  const box = $('archive-box'); if (!box) return;
+  const a = S.archive;
+  const signed = !!(S.sign.partner && S.sign.date);
+  if (isArchived()) {
+    const retainTo = addYears7(a.finalisedAt);
+    box.innerHTML = `
+      <div class="flex items-center gap-2 mb-2">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#1D7A46" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+        <span class="font-semibold text-[13.5px] text-ok">File finalised &amp; archived</span>
+      </div>
+      <div class="text-[12.5px] space-y-1">
+        <div>Assembled &amp; finalised by <strong>${esc(a.finalisedBy)}</strong> on ${dMY(dISO(new Date(a.finalisedAt)))}.</div>
+        <div>Retain working papers until <strong>${dMY(dISO(retainTo))}</strong> (7 years).</div>
+        <div class="text-mut">The engagement is read-only. Every screen still renders and prints — nothing can be changed without reopening.</div>
+      </div>
+      ${myRole() === 'partner' ? `<button class="btn btn-ghost !py-1.5 !text-[12px] mt-3" onclick="reopenFile()">Reopen file (reason required, logged)</button>` : ''}`;
+  } else {
+    const assembleBy = signed ? addDays(S.sign.date, 60) : null;
+    const daysLeft = assembleBy ? Math.ceil((new Date(assembleBy + 'T00:00:00') - new Date()) / 86400000) : null;
+    box.innerHTML = `
+      <div class="font-semibold text-[13.5px] mb-1">Finalise &amp; archive (ISA 230)</div>
+      <p class="text-[12.5px] text-mut mb-2">${signed
+        ? `Report signed ${dMY(S.sign.date)} — assemble and finalise the file by <strong>${dMY(assembleBy)}</strong> (${daysLeft} day${Math.abs(daysLeft)===1?'':'s'} ${daysLeft >= 0 ? 'left' : 'OVERDUE'}, 60-day limit).`
+        : 'Available once the partner and report date are entered above — finalising freezes the whole file and starts the 7-year retention clock.'}</p>
+      ${a && a.events && a.events.length ? `<div class="text-[11.5px] text-mut mb-2">${a.events.map(e => `${dMY(dISO(new Date(e.at)))} — ${e.type} by ${esc(e.by)}${e.reason ? ': ' + esc(e.reason) : ''}`).join('<br>')}</div>` : ''}
+      <button class="btn ${signed ? 'btn-pri' : 'btn-ghost'} !py-1.5" ${signed ? '' : 'disabled'} onclick="finaliseFile()">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+        Finalise &amp; archive the file</button>`;
+  }
+}
+
+/* ---------- Compliance & Data (MIA-friendly pack) ---------- */
+/* No approval regime exists for audit software — what MIA reviews is the
+   auditor's file and conduct. These three tabs give a firm the documents
+   that conversation needs: where the data lives, the client-consent clause
+   for the engagement letter, and the ISQM 1 technological-resources memo. */
+let cpTab = 'data';
+document.addEventListener('click', e => {
+  const b = e.target.closest('.cp-tab'); if (!b) return;
+  cpTab = b.dataset.cp;
+  document.querySelectorAll('.cp-tab').forEach(x => { x.classList.toggle('btn-pri', x===b); x.classList.toggle('btn-ghost', x!==b); });
+  renderCompliance();
+});
+function renderCompliance() {
+  document.querySelectorAll('.cp-tab').forEach(x => { x.classList.toggle('btn-pri', x.dataset.cp===cpTab); x.classList.toggle('btn-ghost', x.dataset.cp!==cpTab); });
+  const el = $('cp-render');
+  if (cpTab === 'data') return cpData(el);
+  if (cpTab === 'clause') return cpClause(el);
+  if (cpTab === 'isqm') return cpIsqm(el);
+}
+function cpData(el) {
+  el.innerHTML = `
+  <div class="card card-pad mb-4">
+    <h2 class="font-bold text-[15px] mb-1">Where the audit data lives, and what touches it</h2>
+    <p class="text-[12.5px] text-mut mb-4">The facts a firm needs for its confidentiality assessment (MIA By-Laws / IESBA s.114) and PDPA 2010 compliance. Print this page for the ISQM 1 file alongside the tool memo.</p>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div>
+        <div class="font-semibold text-[13.5px] mb-1.5">Storage &amp; access</div>
+        <ul class="list-disc pl-5 space-y-1 text-[12.5px]">
+          <li>All engagement data and vault documents are stored in a dedicated <strong>Supabase</strong> project (PostgreSQL + object storage), encrypted in transit (TLS) and at rest (AES-256).</li>
+          <li>Access requires sign-in; <strong>row-level security enforced by the database</strong> limits every record to the engagement owner and the team members they invite — including the underlying file storage, not just the interface.</li>
+          <li>Team roles (staff / manager / partner) gate review-locking; a member can never delete an engagement or take ownership — enforced at database level.</li>
+          <li>Every material action is written to an <strong>append-only activity trail</strong>: no user, including the owner, can edit or erase an entry.</li>
+          <li>Finalised files are archived read-only (ISA 230); reopening requires a documented reason and is logged.</li>
+        </ul>
+      </div>
+      <div>
+        <div class="font-semibold text-[13.5px] mb-1.5">AI processing</div>
+        <ul class="list-disc pl-5 space-y-1 text-[12.5px]">
+          <li>AI features run <strong>only when the auditor clicks them</strong> (Ask Mr Auditor, document analysis, statement extraction, position papers). Nothing is sent in the background.</li>
+          <li>What is sent: a summary of the engagement's figures and, for document analysis, the specific vault documents the auditor selects — over TLS to <strong>Anthropic's API</strong>.</li>
+          <li>Per Anthropic's commercial API terms, <strong>API inputs and outputs are not used to train models</strong>.</li>
+          <li>The AI's answer is a draft. It is labelled as AI-drafted wherever it lands in a working paper, and the paper's preparer/reviewer sign-off covers it — responsibility stays with the engagement team.</li>
+          <li>Anything the AI cannot read (size, file type) is reported explicitly — never silently skipped.</li>
+        </ul>
+        <div class="font-semibold text-[13.5px] mb-1.5 mt-4">What we don't do</div>
+        <ul class="list-disc pl-5 space-y-1 text-[12.5px]">
+          <li>No analytics trackers, no advertising SDKs, no resale or secondary use of client data.</li>
+          <li>No cross-client data mixing — every engagement is isolated by row-level security.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="flex gap-2 mt-4 no-print">
+      <button class="btn btn-ghost" onclick="window.print()">Print / PDF for the ISQM 1 file</button>
+    </div>
+  </div>`;
+}
+function cpClause(el) {
+  const co = S.setup.name || '[Client Sdn Bhd]';
+  const firm = S.sign.firm || '[Audit Firm PLT]';
+  const clause = `Use of technology and cloud-based tools
+
+In performing our engagement we use professional software, including cloud-hosted audit software and artificial-intelligence-assisted document analysis, to prepare and manage the audit working papers. Information and documents you provide to us may accordingly be processed and stored by carefully selected third-party service providers under conditions of confidentiality and security (encrypted storage and transmission; access restricted to the engagement team). These providers act as data processors only: your information is not used to train artificial-intelligence models, is not disclosed for any other purpose, and remains subject to our duty of confidentiality under the By-Laws (on Professional Ethics, Conduct and Practice) of the Malaysian Institute of Accountants.
+
+For the purposes of the Personal Data Protection Act 2010, you consent to the processing (including processing outside Malaysia by the service providers described above) of personal data contained in the records and documents provided for this engagement, solely for the performance of the engagement. You confirm that you are authorised to provide such personal data of your employees, customers, suppliers and officers for this purpose.
+
+Responsibility for the audit, the audit opinion and all professional judgments remains solely with ${firm}. Technology is used to assist, not replace, the exercise of professional judgment by the engagement team.`;
+  el.innerHTML = `
+  <div class="card card-pad">
+    <h2 class="font-bold text-[15px] mb-1">Engagement letter clause — technology &amp; consent</h2>
+    <p class="text-[12.5px] text-mut mb-3">Drop this into the firm's engagement letter for <strong>${esc(co)}</strong>. It covers IESBA s.114 confidentiality safeguards and PDPA 2010 consent for cloud and AI processing. Have the firm's usual legal reviewer glance over it once — then it's boilerplate for every engagement.</p>
+    <textarea class="field !text-[12.5px] mono" id="cp-clause-text" rows="16" readonly>${esc(clause)}</textarea>
+    <div class="flex gap-2 mt-3 no-print">
+      <button class="btn btn-pri" onclick="navigator.clipboard.writeText($('cp-clause-text').value).then(()=>toast('Clause copied to clipboard'))">Copy to clipboard</button>
+      <button class="btn btn-ghost" onclick="window.print()">Print / PDF</button>
+    </div>
+  </div>`;
+}
+function cpIsqm(el) {
+  const firm = S.sign.firm || '[Audit Firm PLT]';
+  const today = dMY(dISO(new Date()));
+  el.innerHTML = `
+  <div class="card card-pad no-print mb-4 flex items-start justify-between gap-3 flex-wrap">
+    <div>
+      <h2 class="font-bold text-[15px] mb-1">ISQM 1 technological-resources memo</h2>
+      <p class="text-[12.5px] text-mut max-w-2xl">ISQM 1 (para 32(f)) expects the firm to obtain and maintain appropriate technological resources — in practice, a memo on file showing the firm evaluated the tool. This one is pre-written; the partner reads it, signs it, files it. Firm name flows from the Reports screen.</p>
+    </div>
+    <button class="btn btn-pri" onclick="window.print()">Print / PDF</button>
+  </div>
+  <div class="fs-doc">
+    <div class="text-center mb-4">
+      <div class="font-bold text-[15px]">${esc(firm)}</div>
+      <div class="text-[13px]">Evaluation of technological resources — Mr Auditor (ISQM 1 para 32(f))</div>
+      <div class="text-[11.5px] text-mut">Prepared ${today}</div>
+    </div>
+    <h3>1. Description of the resource</h3>
+    <p>Mr Auditor is a cloud-based statutory-audit platform used by the firm for engagement performance on private-company audits: trial balance processing, materiality and risk documentation (ISA 320/315), working papers with preparer/reviewer sign-off and locking, financial statements and notes preparation (MPERS/MFRS), tax computation, statutory reports, and AI-assisted document analysis and drafting.</p>
+    <h3>2. How the resource supports quality (relevant ISQM 1 components)</h3>
+    <p><strong>Engagement performance:</strong> a single live data model means working-paper totals, financial statements, notes and the tax computation cannot diverge; every figure recomputes from the adjusted trial balance. Working papers lock on review; only a manager or partner can reopen them. <strong>Documentation:</strong> an append-only activity trail records who did what and when; on finalisation the file is archived read-only within the ISA 230 60-day assembly period and retained for 7 years; reopening requires a documented reason. <strong>Confidentiality:</strong> data is encrypted in transit and at rest; database-enforced row-level security restricts each engagement to its team; AI processing occurs only on the engagement team's instruction and the provider does not use the data for model training.</p>
+    <h3>3. Limitations and safeguards</h3>
+    <p>Outputs of the software, including AI-drafted analyses, position papers and note disclosures, are <strong>drafts</strong>. They are labelled as such where they enter the working papers and are subject to preparation and review sign-off by the engagement team. Professional judgments — materiality, sufficiency of evidence, going concern, and the opinion — are made by the engagement team and the signing partner, not the software. The firm remains responsible for direction, supervision and review (ISA 220) on every engagement.</p>
+    <h3>4. Conclusion</h3>
+    <p>The firm has evaluated Mr Auditor and concluded that, used with the safeguards above, it is an appropriate technological resource supporting the firm's system of quality management.</p>
+    <div class="grid grid-cols-2 gap-8 mt-10">
+      <div><div style="border-top:1px solid #0B1437; padding-top:.4rem"><strong>${esc(S.sign.partner) || '[Partner]'}</strong><br>Partner, ${esc(firm)}<br>Date: ____________</div></div>
+      <div></div>
+    </div>
+  </div>`;
+}
+
 /* ---------- Query / PBC log (F2) ---------- */
 /* One table (`queries`), distinguished by kind: 'pbc' (prepared-by-client
    requests, generated from what's still outstanding in the vault) or
@@ -1948,6 +2142,7 @@ async function queriesList(kind) {
   return error ? [] : data;
 }
 async function queryAdd(kind, question, category, wpRef) {
+  if (guardArchived()) return;
   if (!question || !question.trim()) return;
   const prefix = kind === 'pbc' ? 'PBC' : 'Q';
   const existing = await queriesList(kind);
@@ -1961,6 +2156,7 @@ async function queryAdd(kind, question, category, wpRef) {
   renderQueriesScreen();
 }
 async function queryRespond(id, ref, response) {
+  if (guardArchived()) return;
   if (!response || !response.trim()) return;
   const { error } = await sb.from('queries').update({ response: response.trim(), status: 'answered', responded_at: new Date().toISOString() }).eq('id', id);
   if (error) { toast('Could not save response'); return; }
@@ -1968,12 +2164,14 @@ async function queryRespond(id, ref, response) {
   renderQueriesScreen();
 }
 async function queryClose(id, ref) {
+  if (guardArchived()) return;
   const { error } = await sb.from('queries').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', id);
   if (error) { toast('Could not close'); return; }
   logActivity('Closed', ref);
   renderQueriesScreen();
 }
 async function queryReopen(id, ref) {
+  if (guardArchived()) return;
   const { error } = await sb.from('queries').update({ status: 'open', closed_at: null }).eq('id', id);
   if (error) return;
   logActivity('Reopened', ref);
@@ -2086,6 +2284,7 @@ async function vaultUploadOne(file, cat, clientId) {
   return true;
 }
 async function vaultUpload(input) {
+  if (guardArchived()) { input.value = ''; return; }
   const cat = $('vault-cat').value || 'Others';
   const files = [...input.files]; input.value = '';
   if (!files.length) return;
@@ -2109,6 +2308,7 @@ async function ticksListAll(clientId) {
 }
 function vaultTickToggle(fileId) { vaultTickOpen = vaultTickOpen === fileId ? null : fileId; renderVault(); }
 async function vaultTickSave(fileId, fileName) {
+  if (guardArchived()) return;
   const status = $(`tick-status-${fileId}`).value;
   const initials = $(`tick-initials-${fileId}`).value.trim();
   const note = $(`tick-note-${fileId}`).value.trim();
@@ -2145,6 +2345,7 @@ async function vaultDownload(id) {
   const a = document.createElement('a'); a.href = data.signedUrl; a.download = row.file_name; a.click();
 }
 async function vaultDelete(id) {
+  if (guardArchived()) return;
   if (!confirm('Remove this file from the vault?')) return;
   const row = await vaultRow(id);
   if (row) await sb.storage.from('evidence').remove([row.storage_path]);
@@ -2250,7 +2451,7 @@ function vaultAnalyzeToWp(cat, btn) {
   const ref = prompt('Which working paper reference should this be added to? (e.g. C, F, A5)');
   if (!ref) return;
   const existing = wpGet(`plan.notes.${ref}`, '');
-  wpSet(`plan.notes.${ref}`, (existing ? existing + '\n\n' : '') + `[AI document analysis — ${cat}, ${dMY(dISO(new Date()))}]\n${text}`);
+  wpSet(`plan.notes.${ref}`, (existing ? existing + '\n\n' : '') + `[AI-drafted document analysis — ${cat}, ${dMY(dISO(new Date()))} — verify against source documents; this paper's sign-off covers the content]\n${text}`);
   toast(`Added to working paper ${ref}`);
 }
 
@@ -3421,6 +3622,7 @@ let curWp = 'A2';
 /* dotted-path state helpers so every paper input persists with one attribute */
 function wpGet(path, dflt) { let o = S; for (const k of path.split('.')) { if (o == null) return dflt; o = o[k]; } return o == null ? dflt : o; }
 function wpSet(path, val) {
+  if (guardArchived()) return;
   const seg = path.split('.'); let o = S;
   for (let i = 0; i < seg.length - 1; i++) { if (typeof o[seg[i]] !== 'object' || o[seg[i]] == null) o[seg[i]] = {}; o = o[seg[i]]; }
   o[seg[seg.length - 1]] = val;
@@ -3459,8 +3661,9 @@ function wpAreaRisk(ref, cats, gross) {
 /* shared paper chrome: header + body + conclusion/sign-off */
 function wpChrome(ref, title, isa, body) {
   const s = (S.wpSign || {})[ref] || {};
-  const locked = !!s.rev;                       // reviewed = locked
-  const canReview = ['manager','partner'].includes(myRole());
+  const fileArchived = isArchived();
+  const locked = !!s.rev || fileArchived;       // reviewed or whole-file archived = locked
+  const canReview = ['manager','partner'].includes(myRole()) && !fileArchived;
   return `
   <div class="fs-doc">
     <div class="flex items-start justify-between flex-wrap gap-2 border-b border-line pb-3 mb-4">
@@ -3470,7 +3673,10 @@ function wpChrome(ref, title, isa, body) {
       </div>
       <span class="pill ${locked ? 'pill-ok' : 'pill-mut'} mono !text-[13px]">${ref}${locked ? ' · locked' : ''}</span>
     </div>
-    ${locked ? `<div class="flex items-center gap-2 rounded-xl bg-okbg text-ok text-[12.5px] font-medium px-3 py-2 mb-4">
+    ${fileArchived ? `<div class="flex items-center gap-2 rounded-xl bg-okbg text-ok text-[12.5px] font-medium px-3 py-2 mb-4">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+      File finalised &amp; archived — every paper is read-only. Reopen the file from the Reports screen (reason required).
+    </div>` : locked ? `<div class="flex items-center gap-2 rounded-xl bg-okbg text-ok text-[12.5px] font-medium px-3 py-2 mb-4">
       <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
       Reviewed by ${esc(s.rev)}${s.revDate ? ' on ' + dMY(s.revDate) : ''} — this paper is locked.
       ${canReview ? `<button class="btn btn-ghost !py-1 !px-2 !text-[11.5px] ml-auto" onclick="wpReopen('${ref}')">Reopen for editing</button>`
@@ -3977,7 +4183,7 @@ async function wpAnalyzeEvidence(ref, evCat) {
 function wpAnalyzeToNotes(ref, btn) {
   const text = decodeURIComponent(btn.closest('div.border').querySelector('[data-ai-text]').dataset.aiText);
   const existing = wpGet(`plan.notes.${ref}`, '');
-  wpSet(`plan.notes.${ref}`, (existing ? existing + '\n\n' : '') + `[AI document analysis, ${dMY(dISO(new Date()))}]\n${text}`);
+  wpSet(`plan.notes.${ref}`, (existing ? existing + '\n\n' : '') + `[AI-drafted document analysis, ${dMY(dISO(new Date()))} — verify against source documents; this paper's sign-off covers the content]\n${text}`);
   wpShow(ref);
   toast('Added to working paper notes');
 }
@@ -4163,6 +4369,9 @@ function printSection(id) {
 
 /* ---------- persistence ---------- */
 function saveState(announce) {
+  // Backstop for the archived state: nothing persists to the cloud from an
+  // archived file, whatever path tried to mutate it.
+  if (isArchived()) { if (announce) guardArchived(); return; }
   try { localStorage.setItem('mr-auditor-v2', JSON.stringify(DB)); } catch(e) {}
   if (sb && authUser) {
     const client = S;

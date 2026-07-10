@@ -197,6 +197,10 @@ tailwind.config = {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/><path d="M12 8v4M12 15h.01"/></svg>
         <span>Queries, PBC &amp; Trail</span>
       </div>
+      <div class="navlink" data-scr="compliance">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg>
+        <span>Compliance &amp; Data</span>
+      </div>
       <div class="navlink" data-scr="defence">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/><path d="M9 12h6M12 9v6"/></svg>
         <span>Defence &amp; Positions (AI)</span>
@@ -399,6 +403,16 @@ tailwind.config = {
         <button class="btn btn-ghost qt-tab" data-qt="activity">Activity trail</button>
       </div>
       <div id="qt-render"></div>
+    </section>
+
+    <!-- ================= COMPLIANCE & DATA ================= -->
+    <section class="screen" id="scr-compliance">
+      <div class="flex flex-wrap gap-2 mb-5 no-print" id="cp-tabs">
+        <button class="btn btn-pri cp-tab" data-cp="data">Data &amp; confidentiality</button>
+        <button class="btn btn-ghost cp-tab" data-cp="clause">Engagement letter clause</button>
+        <button class="btn btn-ghost cp-tab" data-cp="isqm">ISQM 1 tool memo</button>
+      </div>
+      <div id="cp-render"></div>
     </section>
 
     <!-- ================= EVIDENCE VAULT ================= -->
@@ -700,6 +714,7 @@ tailwind.config = {
           <label class="flex items-center gap-2 mt-3 text-[13px]"><input type="checkbox" id="s-goingconcern" class="rep-in"> Include Material Uncertainty — Going Concern</label>
           <label class="flex items-center gap-2 mt-2 text-[13px]"><input type="checkbox" id="s-otherinfo" class="rep-in" checked> Directors are responsible for other information</label>
         </div>
+        <div class="card card-pad lg:col-span-3" id="archive-box"></div>
       </div>
 
       <div class="flex flex-wrap gap-2 mb-4 no-print" id="rep-tabs">
