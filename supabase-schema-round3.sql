@@ -61,9 +61,16 @@ create policy "member engagements read" on engagements for select
   using (can_access_engagement(id));
 create policy "member engagements update" on engagements for update
   using (can_access_engagement(id)) with check (can_access_engagement(id));
--- a member must never be able to reassign ownership to themselves
-revoke update (owner) on table engagements from authenticated;
-revoke update (owner) on table engagements from anon;
+-- A member must never be able to reassign ownership to themselves.
+-- NOTE: a bare "revoke update (owner)" is a no-op while the role still holds
+-- table-level UPDATE (Postgres column privileges don't subtract from table
+-- privileges — verified the hard way with a live two-account test). The
+-- correct pattern: drop table-level UPDATE entirely, then grant back only
+-- the columns the app legitimately updates. The owner column becomes
+-- immutable through the API for everyone.
+revoke update on table engagements from authenticated;
+revoke update on table engagements from anon;
+grant update (name, fye, data) on table engagements to authenticated;
 
 -- Vault files
 create policy "member evidence read" on evidence_files for select
