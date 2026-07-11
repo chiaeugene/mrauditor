@@ -679,8 +679,11 @@ tailwind.config = {
             <div><label class="fieldlbl">Unabsorbed capital allowances b/f</label><input class="field mono num-in tax-in" id="tax-cabf" placeholder="0"></div>
             <div><label class="fieldlbl">Unabsorbed business losses b/f (10-YA limit)</label><input class="field mono num-in tax-in" id="tax-losses" placeholder="0"></div>
             <div><label class="fieldlbl">CP204 instalments paid to date</label><input class="field mono num-in tax-in" id="tax-cp204" placeholder="0"></div>
+            <div><label class="fieldlbl">Approved donations (s.44(6) — capped 10% of aggregate)</label><input class="field mono num-in tax-in" id="tax-donapproved" placeholder="0"></div>
+            <div><label class="fieldlbl">Zakat perniagaan (s.44(11A) — capped 2.5% of aggregate)</label><input class="field mono num-in tax-in" id="tax-zakat" placeholder="0"></div>
           </div>
           <div class="mt-4 p-3 rounded-xl bg-indigosoft text-[12.5px]" id="tax-sme-box"></div>
+          <div class="mt-4" id="tax-scan"></div>
           <div class="mt-4" id="tax-dt"></div>
         </div>
         <div class="card card-pad">
@@ -692,7 +695,10 @@ tailwind.config = {
             </button>
           </div>
           <div id="tax-comp"></div>
+          <div class="mt-4" id="tax-trueup"></div>
+          <div class="mt-4" id="tax-etr"></div>
           <div class="mt-4" id="tax-cp204-plan"></div>
+          <div class="mt-4" id="tax-wht"></div>
         </div>
       </div>
     </section>

@@ -27,7 +27,7 @@ const BLANK = () => ({
   adjustments: [],        // {id, findingId, desc, entries:[{cat,label,amt}]}  amt: +dr / -cr
   findingStatus: {},      // findingId -> 'adjusted' | 'noted'
   audit: { benchmark:'revenue', pm:'0.75' },
-  tax: { entertain:'', fines:'', donations:'', otherAdd:'', exemptInc:'', ca:'', caBf:'', bc:'', losses:'', cp204:'' },
+  tax: { entertain:'', fines:'', donations:'', otherAdd:'', exemptInc:'', ca:'', caBf:'', bc:'', losses:'', cp204:'', donApproved:'', zakat:'' },
   sign: { firm:'', af:'', partner:'', approval:'', place:'', date:'', opinion:'unmodified',
           goingconcern:false, otherinfo:true },
   notes: {},              // note-detail inputs that kill the FS-notes placeholders
@@ -1152,7 +1152,12 @@ function taxComputeCore() {
   // Business losses b/f: absorbed up to statutory income; 10-YA carry-forward limit.
   const lossUtil = Math.min(afterCA, T('losses'));
   const lossCf = T('losses') - lossUtil;
-  const ci = Math.max(afterCA - lossUtil, 0);
+  const aggregate = Math.max(afterCA - lossUtil, 0);   // single-business SME: aggregate ≈ statutory after losses
+  // Approved donations: deduction capped at 10% of aggregate income (s.44(6)).
+  const donUtil = Math.min(T('donApproved'), Math.round(aggregate * 0.10));
+  // Zakat perniagaan: deduction capped at 2.5% of aggregate income (s.44(11A)).
+  const zakatUtil = Math.min(T('zakat'), Math.round(aggregate * 0.025));
+  const ci = Math.max(aggregate - donUtil - zakatUtil, 0);
   let tax = 0; const bands = [];
   if (sme.ok) {
     const b1 = Math.min(ci, 150000), b2 = Math.min(Math.max(ci-150000,0), 450000), b3 = Math.max(ci-600000, 0);
@@ -1162,14 +1167,15 @@ function taxComputeCore() {
     tax = b1*.15 + b2*.17 + b3*.24;
   } else { bands.push(['Chargeable income @ 24%', ci*.24]); tax = ci*.24; }
   tax = Math.round(tax);
-  return { m, sme, T, dep, dirAdvDeemed, addbacks, adjusted, caAvail, caUtil, caCf, afterCA, lossUtil, lossCf, ci, bands, tax };
+  return { m, sme, T, dep, dirAdvDeemed, addbacks, adjusted, caAvail, caUtil, caCf, afterCA, lossUtil, lossCf, aggregate, donUtil, zakatUtil, ci, bands, tax };
 }
 function renderTax() {
   const m = model();
   $('tax-ya').textContent = S.setup.fye ? new Date(S.setup.fye).getFullYear() : '—';
   // bind inputs
   const map = { 'tax-entertain':'entertain','tax-fines':'fines','tax-donations':'donations','tax-other-add':'otherAdd',
-    'tax-exempt-inc':'exemptInc','tax-ca':'ca','tax-cabf':'caBf','tax-losses':'losses','tax-cp204':'cp204' };
+    'tax-exempt-inc':'exemptInc','tax-ca':'ca','tax-cabf':'caBf','tax-losses':'losses','tax-cp204':'cp204',
+    'tax-donapproved':'donApproved','tax-zakat':'zakat' };
   for (const [id,k] of Object.entries(map)) { const el = $(id); if (el && document.activeElement !== el) el.value = S.tax[k] || ''; }
 
   const sme = smeEligible();
@@ -1182,8 +1188,9 @@ function renderTax() {
       : 'Not eligible — flat 24% on all chargeable income.'}</div>`;
 
   if (!S.tb.length) { $('tax-comp').innerHTML = '<div class="text-mut text-[13px]">Import a trial balance first.</div>';
-    $('tax-dt').innerHTML = ''; $('tax-cp204-plan').innerHTML = ''; return; }
-  const { T, dep, dirAdvDeemed, adjusted, caAvail, caUtil, caCf, afterCA, lossUtil, lossCf, ci, bands, tax } = taxComputeCore();
+    for (const id of ['tax-scan','tax-dt','tax-trueup','tax-etr','tax-cp204-plan','tax-wht']) { const e2 = $(id); if (e2) e2.innerHTML = ''; }
+    return; }
+  const { T, dep, dirAdvDeemed, adjusted, caAvail, caUtil, caCf, afterCA, lossUtil, lossCf, aggregate, donUtil, zakatUtil, ci, bands, tax } = taxComputeCore();
   const cp204 = T('cp204');
   const bal = tax - cp204;
   const underEst = cp204 > 0 && tax > 0 && (tax - cp204) / tax > 0.30;
@@ -1208,6 +1215,8 @@ function renderTax() {
       ${caAvail > caUtil ? row('Restricted to adjusted income — CA absorbed', -caUtil, {indent:1}) : ''}
       ${row('Statutory income', afterCA, {line:1})}
       ${T('losses') ? row('Less: business losses b/f absorbed (10-YA limit)', -lossUtil, {indent:1}) : ''}
+      ${donUtil ? row(`Less: approved donations (s.44(6), capped 10% of aggregate${donUtil < T('donApproved') ? ' — CAP APPLIED' : ''})`, -donUtil, {indent:1}) : ''}
+      ${zakatUtil ? row(`Less: zakat perniagaan (s.44(11A), capped 2.5%${zakatUtil < T('zakat') ? ' — CAP APPLIED' : ''})`, -zakatUtil, {indent:1}) : ''}
       ${row('Chargeable income', ci, {line:1})}
       ${bands.map(b => row(b[0], b[1], {indent:1})).join('')}
       ${row('Tax charge for YA', tax, {total:1})}
@@ -1273,6 +1282,139 @@ function renderTax() {
       <p class="text-[11.5px] text-mut mt-2">Submit e-CP204 by <strong>${dMY(dueBy)}</strong> (30 days before the basis period). Revision windows (CP204A): 6th month ~ <strong>${dMY(rev6)}</strong>, 9th month ~ <strong>${dMY(rev9)}</strong>. Underestimating below 70% of final tax attracts the 10% s.107C(10) penalty on the shortfall beyond the buffer${cp204 ? '' : ' — enter this year’s CP204 paid to activate the 85% floor'}.</p>
     </div>`;
   } else if (cpEl) cpEl.innerHTML = '';
+
+  // ---- s.39 deductibility scanner over the actual TB expense rows ----
+  const scanEl = $('tax-scan');
+  if (scanEl) scanEl.innerHTML = taxScanHTML();
+
+  // ---- tax provision true-up: computed charge vs the books ----
+  const tuEl = $('tax-trueup');
+  if (tuEl) {
+    const booked = m.nat.TAXEXP;
+    const delta = tax - booked;
+    tuEl.innerHTML = Math.abs(delta) < 1 ? `
+      <div class="p-3 rounded-xl border border-line text-[12.5px]"><span class="font-semibold">Provision true-up:</span> taxation per the books agrees to the computation — no adjustment required.</div>` : `
+      <div class="p-3 rounded-xl border border-line">
+        <div class="font-semibold text-[13.5px] mb-1">Tax provision true-up</div>
+        <table class="fs-doc" style="width:100%">
+          <tr><td>Tax charge per this computation</td><td class="num mono" style="width:120px">${fmt(tax, true)}</td></tr>
+          <tr><td>Taxation per the books (P&amp;L)</td><td class="num mono">${fmt(booked, true)}</td></tr>
+          <tr class="fs-total"><td>${delta > 0 ? 'Under-provided — additional charge needed' : 'Over-provided — write back'}</td><td class="num mono">${fmt(Math.abs(delta), true)}</td></tr>
+        </table>
+        <button class="btn btn-mint !py-1.5 !text-[12px] mt-2 no-print" onclick="taxTrueUp(${delta})">Post true-up adjustment (${fmtRM(Math.abs(delta))})</button>
+        <p class="text-[11px] text-mut mt-1.5">If a deferred tax adjustment has been posted, the P&amp;L taxation line includes it — true up the CURRENT tax portion only (check the AJE register before posting).</p>
+      </div>`;
+  }
+
+  // ---- effective tax rate reconciliation (the FS-note sanity check) ----
+  const etrEl = $('tax-etr');
+  if (etrEl) {
+    if (m.pbt > 0 && tax >= 0) {
+      const stat = Math.round(m.pbt * 0.24);
+      const permanent = Math.round((T('entertain') + T('fines') + T('donations') + T('otherAdd') + dirAdvDeemed - T('exemptInc')) * 0.24);
+      const tierSaving = Math.round(ci * 0.24) - tax;   // saving from SME 15/17% bands
+      const timingOther = tax - stat - permanent + tierSaving;   // dep-vs-CA timing, losses, donations/zakat etc.
+      etrEl.innerHTML = `
+      <div class="p-3 rounded-xl border border-line">
+        <div class="font-semibold text-[13.5px] mb-1">Effective tax rate reconciliation</div>
+        <table class="fs-doc" style="width:100%">
+          <tr><td>Tax at statutory rate — PBT ${fmtRM(m.pbt)} × 24%</td><td class="num mono" style="width:120px">${fmt(stat, true)}</td></tr>
+          ${permanent ? `<tr><td class="pl-4">Non-deductible expenses / (exempt income), net</td><td class="num mono">${fmt(permanent, true)}</td></tr>` : ''}
+          ${tierSaving > 0 ? `<tr><td class="pl-4">SME preferential rates (15%/17% bands)</td><td class="num mono">(${fmt(tierSaving)})</td></tr>` : ''}
+          ${Math.abs(timingOther) >= 1 ? `<tr><td class="pl-4">Capital allowances vs depreciation, losses, s.44 deductions &amp; other</td><td class="num mono">${fmt(timingOther, true)}</td></tr>` : ''}
+          <tr class="fs-total"><td>Tax charge for the YA — effective rate ${(tax / m.pbt * 100).toFixed(1)}%</td><td class="num mono">${fmt(tax, true)}</td></tr>
+        </table>
+        <p class="text-[11px] text-mut mt-1.5">Feeds the taxation note's rate reconciliation — a reviewer's first sanity check on any tax charge.</p>
+      </div>`;
+    } else etrEl.innerHTML = '';
+  }
+
+  // ---- withholding tax radar (s.107A / s.109 / s.109B) ----
+  const whtEl = $('tax-wht');
+  if (whtEl) {
+    const WHT_RULES = [
+      [/royalt/i, 's.109 — royalties to non-residents: 10%'],
+      [/technical (fee|service)|technical assistance/i, 's.109B — technical services by non-residents: 10%'],
+      [/management fee/i, 's.109B exposure if paid to a non-resident: 10% — confirm payee residence'],
+      [/contract payment|subcontract.*foreign|foreign contractor/i, 's.107A — contract payments to non-resident contractors: 10% + 3%'],
+      [/interest.*(non.?resident|overseas|foreign)|offshore.*interest/i, 's.109 — interest to non-residents: 15%'],
+    ];
+    const hits = [];
+    for (const r of S.tb) { if (CAT[r.cat].kind !== 'pl') continue;
+      for (const [re, note] of WHT_RULES) if (re.test(r.name)) { hits.push({ name: r.name, amt: (num(r.dr) - num(r.cr)), note }); break; } }
+    whtEl.innerHTML = `
+    <div class="p-3 rounded-xl border border-line">
+      <div class="font-semibold text-[13.5px] mb-1">Withholding tax radar</div>
+      ${hits.length ? `<table class="fs-doc" style="width:100%">${hits.map(h => `
+        <tr><td>${esc(h.name)}<br><span class="text-[11px] text-warn">${h.note}</span></td><td class="num mono align-top" style="width:110px">${fmt(h.amt, true)}</td></tr>`).join('')}</table>
+        <p class="text-[11px] text-mut mt-1.5">Confirm each payee's tax residence; unremitted WHT makes the expense non-deductible until paid (s.39(1)(f)/(i)/(j)) plus penalties.</p>`
+      : '<p class="text-[12px] text-mut">No royalty / technical fee / non-resident payment patterns detected on the TB. Confirm with the client that no cross-border service, royalty or interest payments exist.</p>'}
+    </div>`;
+  }
+}
+/* Scan the TB expense rows against the s.39 non-deductibility patterns and
+   pre-compute the add-backs — the line-by-line review a tax agent does by
+   hand. One click carries the amounts into the computation inputs. */
+const TAX_SCAN_RULES = [
+  [/entertain/i, 'half', 'Entertainment — 50% deductible (s.39(1)(l)); 100% add-back unless for employees'],
+  [/fine|penalt|summons|compound/i, 'fines', 'Fines, penalties & compounds — wholly non-deductible'],
+  [/donation|derma|sumbangan/i, 'don', 'Donation — deductible only if approved institution (s.44(6)); otherwise add back'],
+  [/unrealised|unrealized/i, 'add', 'Unrealised forex / fair-value loss — add back until realised'],
+  [/general (provision|allowance)|provision for doubtful/i, 'add', 'General provision — non-deductible (specific write-offs are deductible)'],
+  [/renovat/i, 'add', 'Renovation — capital in nature; claim CA/IBA where eligible instead'],
+  [/leave passage/i, 'add', 'Leave passage — non-deductible (s.39(1)(m))'],
+  [/club.*(fee|membership)|entrance fee/i, 'add', 'Club entrance/membership — generally non-deductible'],
+  [/zakat/i, 'zakat', 'Zakat — deduct via s.44(11A) (2.5% cap input), not as an expense'],
+  [/secretarial|tax filing fee|tax agent fee/i, 'cap15', 'Secretarial + tax filing fees — combined deduction capped at RM15,000/YA'],
+];
+function taxScanHTML() {
+  const hits = [];
+  for (const r of S.tb) {
+    if (CAT[r.cat].kind !== 'pl' || CAT[r.cat].side !== 1) continue;   // expenses only
+    const amt = num(r.dr) - num(r.cr);
+    if (amt <= 0) continue;
+    for (const [re, kind, note] of TAX_SCAN_RULES) if (re.test(r.name)) { hits.push({ name: r.name, amt, kind, note }); break; }
+  }
+  const hasMotorAndDirectors = S.tb.some(r => r.cat === 'PPE' && /motor|vehicle|truck|lorr|car\b/i.test(r.name)) && S.directors.length > 0;
+  const sug = { entertain: 0, fines: 0, donations: 0, otherAdd: 0 };
+  for (const h of hits) {
+    if (h.kind === 'half') sug.entertain += Math.round(h.amt * 0.5);
+    else if (h.kind === 'fines') sug.fines += h.amt;
+    else if (h.kind === 'don') sug.donations += h.amt;
+    else if (h.kind === 'add') sug.otherAdd += h.amt;
+    else if (h.kind === 'cap15') sug.otherAdd += Math.max(h.amt - 15000, 0);
+  }
+  const anySug = sug.entertain + sug.fines + sug.donations + sug.otherAdd > 0;
+  return `
+  <div class="p-3 rounded-xl border border-line">
+    <div class="font-semibold text-[13.5px] mb-1">s.39 deductibility scanner — read from the trial balance</div>
+    ${hits.length ? `<table class="fs-doc" style="width:100%">${hits.map(h => `
+      <tr><td>${esc(h.name)} <span class="mono text-[11px] text-mut">(${fmt(h.amt)})</span><br><span class="text-[11px] ${h.kind === 'zakat' ? 'text-indigo' : 'text-warn'}">${h.note}</span></td>
+      <td class="num mono align-top" style="width:100px">${h.kind === 'half' ? fmt(Math.round(h.amt * 0.5)) : h.kind === 'zakat' ? '—' : h.kind === 'cap15' ? fmt(Math.max(h.amt - 15000, 0)) : fmt(h.amt)}</td></tr>`).join('')}</table>` :
+      '<p class="text-[12px] text-mut">No non-deductibility patterns detected on the expense rows — review the detailed ledgers for items hidden in general accounts.</p>'}
+    ${hasMotorAndDirectors ? '<p class="text-[11px] text-warn mt-1.5">Motor vehicles + directors on file — check benefits-in-kind on the directors’ EA forms (prescribed value method) and private-use fuel.</p>' : ''}
+    ${anySug ? `<button class="btn btn-pri !py-1.5 !text-[12px] mt-2 no-print" onclick="taxScanApply(${sug.entertain},${sug.fines},${sug.donations},${sug.otherAdd})">
+      Apply scanner results to the computation</button>
+      <p class="text-[11px] text-mut mt-1.5">Fills entertainment ${fmtRM(sug.entertain)}, fines ${fmtRM(sug.fines)}, donations ${fmtRM(sug.donations)} (move to the approved-donations input if receipts from approved institutions exist), other add-backs ${fmtRM(sug.otherAdd)}.</p>` : ''}
+  </div>`;
+}
+function taxScanApply(ent, fines, don, other) {
+  if (guardArchived()) return;
+  Object.assign(S.tax, { entertain: String(ent), fines: String(fines), donations: String(don), otherAdd: String(other), _touched: true });
+  saveState(); renderTax();
+  toast('Scanner results applied to the computation');
+}
+function taxTrueUp(delta) {
+  if (guardArchived()) return;
+  const amt = Math.round(Math.abs(delta));
+  const entries = delta > 0
+    ? [ {cat:'TAXEXP', label:'Taxation', amt: amt}, {cat:'TAXPAY', label:'Current tax payable', amt: -amt} ]
+    : [ {cat:'TAXPAY', label:'Current tax payable', amt: amt}, {cat:'TAXEXP', label:'Taxation', amt: -amt} ];
+  S.adjustments.push({ id:nid(), manual:true,
+    desc:`Tax provision true-up to the computed charge (${delta > 0 ? 'under' : 'over'}-provided ${fmtRM(amt)})`, entries });
+  logActivity('Posted tax true-up adjustment', fmtRM(amt));
+  saveState(); renderTax(); updateTop();
+  toast('True-up posted — FS updated');
 }
 function dtPostAje(delta) {
   if (guardArchived()) return;
@@ -1289,7 +1431,8 @@ function dtPostAje(delta) {
 document.addEventListener('input', e => {
   if (e.target.classList && e.target.classList.contains('tax-in')) {
     const map = { 'tax-entertain':'entertain','tax-fines':'fines','tax-donations':'donations','tax-other-add':'otherAdd',
-      'tax-exempt-inc':'exemptInc','tax-ca':'ca','tax-cabf':'caBf','tax-losses':'losses','tax-cp204':'cp204' };
+      'tax-exempt-inc':'exemptInc','tax-ca':'ca','tax-cabf':'caBf','tax-losses':'losses','tax-cp204':'cp204',
+      'tax-donapproved':'donApproved','tax-zakat':'zakat' };
     S.tax[map[e.target.id]] = e.target.value; S.tax._touched = true;
     clearTimeout(window._taxT); window._taxT = setTimeout(()=>{ renderTax(); saveState(); }, 500);
   }
@@ -3002,6 +3145,8 @@ function tkFormC(el) {
       ${row('−','Capital allowances absorbed (current + b/f, per CA statement)', -tc.caUtil, {indent:1})}
       ${row('','Statutory business income', tc.afterCA, {line:1})}
       ${tc.lossUtil ? row('−','Unabsorbed business losses b/f absorbed (s.44(2), 10-YA limit)', -tc.lossUtil, {indent:1}) : ''}
+      ${tc.donUtil ? row('−','Approved donations (s.44(6), 10% aggregate cap)', -tc.donUtil, {indent:1}) : ''}
+      ${tc.zakatUtil ? row('−','Zakat perniagaan (s.44(11A), 2.5% cap)', -tc.zakatUtil, {indent:1}) : ''}
       ${row('','CHARGEABLE INCOME', tc.ci, {total:1})}
       ${tc.caCf > 0 ? row('c/f','Unabsorbed capital allowances carried forward', tc.caCf, {indent:1}) : ''}
       ${tc.lossCf > 0 ? row('c/f','Unabsorbed business losses carried forward', tc.lossCf, {indent:1}) : ''}
@@ -3375,6 +3520,33 @@ function bmReconstruct() {
   saveState(); renderToolkit(); updateTop();
   toast(`${stmt.length} unrecorded transaction(s) posted as one adjustment — FS updated`);
 }
+/* AI identification: for each unrecorded transaction, ask the AI — with the
+   engagement's business context — what it most likely is, which account it
+   belongs to, and what source document should exist. Suggestions land on
+   the rows (and flow into the voucher narratives); the auditor confirms. */
+async function bmAiIdentify() {
+  const { stmt } = bmUnmatched();
+  if (!stmt.length) return;
+  const st = $('bm-ai-status'); if (st) st.textContent = 'AI is studying the transactions against the business…';
+  try {
+    const lines = stmt.map((r, i) => `${i}: ${r.date} "${r.desc}" ${r.dr ? 'PAID OUT ' + fmt(r.dr) : 'RECEIVED ' + fmt(r.cr)}`).join('\n');
+    const answer = await aiRequest(
+`The company is ${S.setup.name} (${S.setup.activity}). Risk notes: ${S.intake.risknotes || 'none'}. Bankers: ${S.intake.banks || 'n/a'}.
+These bank statement transactions have NO entry in the client's books. For EACH, using the business context and the trial balance in your context, state what it most likely is, the account to record it in, and the source document that should exist. Output ONLY a JSON array, no commentary:
+[{"i":0,"likely":"...","account":"...","doc":"..."}]
+Transactions:
+${lines}`);
+    const mJson = answer.match(/\[[\s\S]*\]/);
+    if (!mJson) throw new Error('no parseable suggestions returned');
+    const sugs = JSON.parse(mJson[0]);
+    for (const s of sugs) if (stmt[s.i]) stmt[s.i].ai = { likely: s.likely, account: s.account, doc: s.doc };
+    saveState();
+    logActivity('AI identified unrecorded transactions', `${sugs.length} suggestion(s) on ${S.bankmatch.srcName}`);
+    renderToolkit();
+  } catch (e) {
+    if (st) st.textContent = 'Could not identify: ' + (e.message || 'unknown error');
+  }
+}
 async function bmMissingDocsQuery() {
   const { stmt } = bmUnmatched();
   if (!stmt.length) return;
@@ -3415,7 +3587,8 @@ function bmVouchersHTML() {
           <tr><td style="width:32%" class="font-semibold">${isReceipt ? 'Received from' : 'Paid to'}</td><td>${esc(r.desc)}</td></tr>
           <tr><td class="font-semibold">Amount</td><td class="mono">RM ${fmt(isReceipt ? r.cr : r.dr)}</td></tr>
           <tr><td class="font-semibold">Account</td><td>${cat ? CAT[cat].label : '[to classify]'}</td></tr>
-          <tr><td class="font-semibold">Source</td><td class="text-[11.5px]">Bank statement line — ${esc(S.bankmatch.srcName)}. No contemporaneous source document was provided; this voucher reconstructs the record and requires the client's confirmation below.</td></tr>
+          ${r.ai ? `<tr><td class="font-semibold">Being</td><td class="text-[12px]">${esc(r.ai.likely)} <span class="text-[10.5px] text-mut">(AI-suggested from the business context — confirm)</span></td></tr>` : ''}
+          <tr><td class="font-semibold">Source</td><td class="text-[11.5px]">Bank statement line — ${esc(S.bankmatch.srcName)}. No contemporaneous source document was provided${r.ai ? ` (expected: ${esc(r.ai.doc)})` : ''}; this voucher reconstructs the record and requires the client's confirmation below.</td></tr>
         </table>
         ${isReceipt && r.cls === 'customer receipt' ? `<div class="text-[11px] text-warn mt-1.5">If this receipt is a sale, the client must issue the corresponding e-invoice via MyInvois (consolidated e-invoice rules may apply) — this voucher does not replace it.</div>` : ''}
         <div class="grid grid-cols-2 gap-8 mt-4 text-[11.5px]">
@@ -3531,13 +3704,20 @@ async function bankmatchHTML(el, v) {
       ${un.cbRows.length ? `<span class="pill pill-warn">${un.cbRows.length} in the books but not on this statement</span>` : ''}
     </div>
     ${un.stmt.length ? `
-    <table class="tbl"><thead><tr><th>Date</th><th>Statement line (unrecorded)</th><th class="num">DR</th><th class="num">CR</th><th>Will be recorded as</th></tr></thead>
+    <table class="tbl"><thead><tr><th>Date</th><th>Statement line (unrecorded)</th><th class="num">DR</th><th class="num">CR</th><th>Will be recorded as</th><th>AI: what this likely is</th></tr></thead>
     <tbody>${un.stmt.map(r => { let cat = BM_RECON_CAT[r.cls]; if (r.cls === 'director') cat = r.cr > 0 ? 'DIROWE' : 'DIRADV';
       return `<tr class="bg-warnbg/40"><td class="mono text-[11px]">${esc(r.date)}</td><td class="text-[12px]">${esc(r.desc)}</td>
       <td class="num mono text-[12px]">${r.dr ? fmt(r.dr) : ''}</td><td class="num mono text-[12px]">${r.cr ? fmt(r.cr) : ''}</td>
-      <td class="text-[11.5px]">${cat ? (r.cr > 0 ? 'Dr Cash / Cr ' + CAT[cat].label : 'Dr ' + CAT[cat].label + ' / Cr Cash') : 'excluded (internal)'}</td></tr>`; }).join('')}
+      <td class="text-[11.5px]">${cat ? (r.cr > 0 ? 'Dr Cash / Cr ' + CAT[cat].label : 'Dr ' + CAT[cat].label + ' / Cr Cash') : 'excluded (internal)'}</td>
+      <td class="text-[11.5px] max-w-[240px]">${r.ai ? `<span class="font-medium">${esc(r.ai.likely)}</span><br><span class="text-mut">→ ${esc(r.ai.account)} · expect: ${esc(r.ai.doc)}</span>` : '<span class="text-mut">—</span>'}</td></tr>`; }).join('')}
     </tbody></table>
-    <div class="flex flex-wrap gap-2 mt-3 no-print">
+    <div class="flex flex-wrap gap-2 mt-3 no-print items-center">
+      <button class="btn btn-ghost" onclick="bmAiIdentify()">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.7L19.6 10l-5.7 1.9L12 17.6l-1.9-5.7L4.4 10l5.7-1.9z"/></svg>
+        AI: identify these for this business</button>
+      <span id="bm-ai-status" class="text-[11.5px] text-mut"></span>
+    </div>
+    <div class="flex flex-wrap gap-2 mt-2 no-print">
       <button class="btn btn-mint" onclick="bmReconstruct()">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
         Reconstruct ${un.stmt.length} entr${un.stmt.length===1?'y':'ies'} (one adjustment)</button>
