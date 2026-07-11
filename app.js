@@ -21,13 +21,13 @@ let _vaultN = 0;   // cached vault file count for the active engagement (refresh
 /* ---------------- state ---------------- */
 const BLANK = () => ({
   setup: { name:'', regno:'', incdate:'', fye:'', activity:'', framework:'MPERS',
-           capital:'', employees:'', firstaudit:'no', foreign:'no', address:'' },
+           capital:'', employees:'', firstaudit:'no', foreign:'no', address:'', secretary:'', secno:'' },
   directors: [],
   tb: [],                 // {id, name, cat, dr, cr, py}
   adjustments: [],        // {id, findingId, desc, entries:[{cat,label,amt}]}  amt: +dr / -cr
   findingStatus: {},      // findingId -> 'adjusted' | 'noted'
   audit: { benchmark:'revenue', pm:'0.75' },
-  tax: { entertain:'', fines:'', donations:'', otherAdd:'', exemptInc:'', ca:'', losses:'', cp204:'' },
+  tax: { entertain:'', fines:'', donations:'', otherAdd:'', exemptInc:'', ca:'', bc:'', losses:'', cp204:'' },
   sign: { firm:'', af:'', partner:'', approval:'', place:'', date:'', opinion:'unmodified',
           goingconcern:false, otherinfo:true },
   notes: {},              // note-detail inputs that kill the FS-notes placeholders
@@ -720,6 +720,7 @@ function renderSetup() {
   set('f-name',s.name); set('f-regno',s.regno); set('f-incdate',s.incdate); set('f-fye',s.fye);
   set('f-activity',s.activity); set('f-framework',s.framework); set('f-capital',s.capital);
   set('f-employees',s.employees); set('f-firstaudit',s.firstaudit); set('f-foreign',s.foreign); set('f-address',s.address);
+  set('f-secretary',s.secretary); set('f-secno',s.secno);
   renderTeam().catch(()=>{});
 
   $('directors-list').innerHTML = S.directors.map((d,i) => `
@@ -752,10 +753,12 @@ function renderSetup() {
   $('setup-deadlines').innerHTML = deadlinesHTML();
 }
 function onSetupChange() {
+  if (guardArchived()) { renderSetup(); return; }
   const g = id => $(id).value;
   S.setup = { name:g('f-name'), regno:g('f-regno'), incdate:g('f-incdate'), fye:g('f-fye'),
     activity:g('f-activity'), framework:g('f-framework'), capital:g('f-capital'),
-    employees:g('f-employees'), firstaudit:g('f-firstaudit'), foreign:g('f-foreign'), address:g('f-address') };
+    employees:g('f-employees'), firstaudit:g('f-firstaudit'), foreign:g('f-foreign'), address:g('f-address'),
+    secretary:g('f-secretary'), secno:g('f-secno') };
   updateTop();
   const ex = exemptionAssess();
   const box = $('exemption-box'); if (box) renderSetup();
@@ -1137,7 +1140,7 @@ function taxComputeCore() {
   const T = k => num(S.tax[k]);
   const dep = m.nat.DEPR;
   const dirAdvDeemed = m.nat.DIRADV > 0 ? Math.round(m.nat.DIRADV * 0.0295) : 0;
-  const addbacks = dep + T('entertain') + T('fines') + T('donations') + T('otherAdd') + dirAdvDeemed;
+  const addbacks = dep + T('entertain') + T('fines') + T('donations') + T('otherAdd') + T('bc') + dirAdvDeemed;
   const adjusted = m.pbt + addbacks - T('exemptInc');
   const afterCA = Math.max(adjusted - T('ca'), 0);
   const ci = Math.max(afterCA - T('losses'), 0);
@@ -1185,11 +1188,12 @@ function renderTax() {
       ${T('fines') ? row('Fines and penalties', T('fines'), {indent:1}) : ''}
       ${T('donations') ? row('Unapproved donations', T('donations'), {indent:1}) : ''}
       ${T('otherAdd') ? row('Other add-backs', T('otherAdd'), {indent:1}) : ''}
+      ${T('bc') ? row('Balancing charge on disposals (per CA statement)', T('bc'), {indent:1}) : ''}
       ${dirAdvDeemed ? row('Deemed interest on loans to directors (s.140B, indicative)', dirAdvDeemed, {indent:1}) : ''}
       <tr><td class="font-semibold pt-2" colspan="2">Less:</td></tr>
       ${T('exemptInc') ? row('Non-taxable / exempt income', -T('exemptInc'), {indent:1}) : ''}
       ${row('Adjusted income', adjusted, {line:1})}
-      ${row('Less: capital allowances (Sch 3)', -T('ca'), {indent:1})}
+      ${row('Less: capital allowances (Sch 3 — per CA statement)', -T('ca'), {indent:1})}
       ${row('Statutory income', afterCA, {line:1})}
       ${T('losses') ? row('Less: unabsorbed losses b/f (10-YA carry-forward limit)', -T('losses'), {indent:1}) : ''}
       ${row('Chargeable income', ci, {line:1})}
@@ -1199,7 +1203,10 @@ function renderTax() {
       ${cp204 ? row(bal >= 0 ? 'Balance payable with Form C (CP207)' : 'Tax overpaid — refundable', bal, {line:1}) : ''}
     </table>
     ${underEst ? `<div class="mt-3 p-2.5 rounded-lg bg-warnbg text-warn text-[12.5px] font-medium">CP204 underestimation: actual tax exceeds the estimate by more than 30% — the excess over the 30% buffer attracts a 10% penalty under s.107C(10). Consider CP204 revisions (6th/9th month) next year.</div>` : ''}
-    <div class="mt-3 text-[12px] text-mut">Capital allowance quick rates (IA/AA): heavy machinery 20/20 · general plant 20/14 · office equipment &amp; furniture 20/10 · computers &amp; ICT 20/20 (accelerated options exist) · motor vehicles 20/20 (non-commercial QE capped at RM50k–RM100k). Compute per asset in the CA schedule and enter the total above.</div>`;
+    ${S.caAssets.length ? caStatementHTML() : `<div class="mt-3 p-2.5 rounded-lg bg-indigosoft text-[12.5px]">
+      <strong>No Capital Allowance Statement yet.</strong> The CA figure above needs its supporting schedule (per-asset TWDV, IA/AA, balancing charges) — build it in
+      <button class="text-indigo font-medium hover:underline" onclick="show('toolkit'); tkTab='ca'; renderToolkit()">Toolkit → Capital allowances</button> and apply it here.</div>`}
+    <div class="mt-3 text-[12px] text-mut">Capital allowance quick rates (IA/AA): heavy machinery 20/20 · general plant 20/14 · office equipment &amp; furniture 20/10 · computers &amp; ICT 20/20 (accelerated options exist) · motor vehicles 20/20 (non-commercial QE capped at RM50k–RM100k).</div>`;
 }
 document.addEventListener('input', e => {
   if (e.target.classList && e.target.classList.contains('tax-in')) {
@@ -1657,12 +1664,29 @@ function renderPack() {
   const st = packStatementRows(notes.map);
   const hdr = packHeader(name, reg);
   const contents = [
+    'Corporate Information',
     'Directors’ Report', 'Statement by Directors', 'Statutory Declaration',
     'Independent Auditors’ Report',
     'Statement of Profit or Loss and Other Comprehensive Income',
     'Statement of Financial Position', 'Statement of Changes in Equity',
     'Statement of Cash Flows', 'Notes to the Financial Statements'
   ];
+  // Corporate information — the conventional first inner page of a Malaysian
+  // statutory FS: board, secretary, registered office, auditors, bankers.
+  const banks = (S.intake.banks || '').split(/[,;]/).map(b => b.trim()).filter(Boolean);
+  const corpRow = (label, val) => `<tr><td class="align-top font-semibold" style="width:38%">${label}</td><td>${val}</td></tr>`;
+  const corpInfo = `
+    <div class="pagebrk">${hdr}
+      <h3 class="text-center">CORPORATE INFORMATION</h3>
+      <table class="fs-doc" style="max-width:38rem;margin:0 auto">
+        ${corpRow('BOARD OF DIRECTORS', S.directors.length ? S.directors.map(d => esc(d.name).toUpperCase()).join('<br>') : '[Directors]')}
+        ${corpRow('COMPANY SECRETARY', S.setup.secretary ? esc(S.setup.secretary).toUpperCase() + (S.setup.secno ? '<br><span class="text-[11px] text-mut">(' + esc(S.setup.secno) + ')</span>' : '') : '[Company secretary — enter on Engagement Setup]')}
+        ${corpRow('REGISTERED OFFICE', esc(S.setup.address) || '[Registered office address]')}
+        ${corpRow('AUDITORS', (esc(S.sign.firm) || '[Audit firm]') + '<br><span class="text-[11px] text-mut">' + (esc(S.sign.af) || '[AF no.]') + ' · Chartered Accountants</span>')}
+        ${banks.length ? corpRow('PRINCIPAL BANKERS', banks.map(esc).join('<br>')) : ''}
+        ${corpRow('REGISTRATION NO.', reg)}
+      </table>
+    </div>`;
   el.innerHTML = `
     <!-- cover -->
     <div class="text-center py-16">
@@ -1678,6 +1702,7 @@ function renderPack() {
         ${contents.map((c,i)=>`<tr class="fs-line"><td>${c}</td><td class="num text-mut">${i+1}</td></tr>`).join('')}
       </table>
     </div>
+    ${corpInfo}
     <div class="pagebrk">${repDirectorsHTML()}</div>
     <div class="pagebrk">${repStatementHTML()}</div>
     <div class="pagebrk">${repStatDecHTML()}</div>
@@ -2889,6 +2914,7 @@ function tkFormC(el) {
       ${tc.T('fines') ? row('+','Fines & penalties', tc.T('fines'), {indent:1}) : ''}
       ${tc.T('donations') ? row('+','Unapproved donations', tc.T('donations'), {indent:1}) : ''}
       ${tc.T('otherAdd') ? row('+','Other add-backs', tc.T('otherAdd'), {indent:1}) : ''}
+      ${tc.T('bc') ? row('+','Balancing charge on disposals (per CA statement)', tc.T('bc'), {indent:1}) : ''}
       ${tc.dirAdvDeemed ? row('+','s.140B deemed interest on advances to directors', tc.dirAdvDeemed, {indent:1}) : ''}
       ${tc.T('exemptInc') ? row('−','Non-taxable / exempt income', -tc.T('exemptInc'), {indent:1}) : ''}
       ${row('','Adjusted income', tc.adjusted, {line:1})}
@@ -2912,51 +2938,104 @@ function tkFormC(el) {
   </div>`;
 }
 /* capital allowance schedule */
+/* Full Schedule 3 asset computation with tax-written-down-value tracking —
+   this is the Capital Allowance Statement (penyata elaun modal) an auditor
+   expects to see behind the tax computation, not just a one-line CA figure.
+   Disposals produce a balancing allowance (TWDV > proceeds) or balancing
+   charge (proceeds > TWDV, capped at allowances previously claimed). */
 function caCompute(a) {
   const cls = CA_CLASSES.find(c => c[0] === a.cls) || CA_CLASSES[1];
   let qe = num(a.cost);
   let capped = false;
   if (a.cls === 'motor' && qe > 100000) { qe = 100000; capped = true; }
+  const prior = Math.min(num(a.priorClaimed), qe);   // allowances claimed in prior YAs
+  const twdvBf = qe - prior;
+  if (a.disposed === 'yes') {
+    const proceeds = Math.min(num(a.proceeds), qe);  // s.35 Sch 3: proceeds restricted to QE
+    const ba = Math.max(twdvBf - proceeds, 0);
+    const bc = Math.min(Math.max(proceeds - twdvBf, 0), prior); // BC capped at allowances claimed
+    return { qe, capped, twdvBf, ia:0, aa:0, ba, bc, claim: ba, twdvCf: 0, rate: cls, disposed: true };
+  }
   const ia = a.isNew === 'yes' ? Math.round(qe * cls[2] / 100) : 0;
-  const aa = Math.round(qe * cls[3] / 100);
-  const prior = num(a.priorClaimed);
   const remaining = Math.max(qe - prior - ia, 0);
-  const claim = ia + Math.min(aa, remaining);
-  return { qe, ia, aa: Math.min(aa, remaining), claim, capped, rate: cls };
+  const aa = Math.min(Math.round(qe * cls[3] / 100), remaining);
+  const claim = ia + aa;
+  return { qe, capped, twdvBf, ia, aa, ba:0, bc:0, claim, twdvCf: Math.max(qe - prior - claim, 0), rate: cls, disposed: false };
+}
+function caTotals() {
+  let claim = 0, bc = 0;
+  for (const a of S.caAssets) { const c = caCompute(a); claim += c.claim; bc += c.bc; }
+  return { claim, bc };
+}
+/* The printable statement — shared by the Toolkit tab and the Tax screen,
+   so the tax computation always carries its supporting schedule. */
+function caStatementHTML() {
+  if (!S.caAssets.length) return '';
+  const t = caTotals();
+  const ya = S.setup.fye ? new Date(S.setup.fye).getFullYear() : '—';
+  return `
+  <div class="fs-doc mt-4">
+    <div class="font-bold text-[14px] mb-1">${esc(S.setup.name) || '[Company]'} — Capital Allowance Statement, YA ${ya} (Schedule 3, ITA 1967)</div>
+    <table class="tbl">
+      <thead><tr><th>Asset</th><th>Rate (IA/AA)</th><th class="num">QE</th><th class="num">TWDV b/f</th><th class="num">IA</th><th class="num">AA</th><th class="num">BA</th><th class="num">BC</th><th class="num">TWDV c/f</th></tr></thead>
+      <tbody>${S.caAssets.map(a => { const c = caCompute(a); return `
+        <tr><td>${esc(a.desc) || '[asset]'}${c.disposed ? ' <span class="pill pill-warn !text-[9px]">disposed</span>' : ''}${c.capped ? ' <span class="pill pill-warn !text-[9px]">QE capped</span>' : ''}</td>
+        <td class="mono text-[11px]">${c.rate[2]}/${c.rate[3]}%</td>
+        <td class="num mono">${fmt(c.qe, true)}</td><td class="num mono">${fmt(c.twdvBf, true)}</td>
+        <td class="num mono">${fmt(c.ia, true)}</td><td class="num mono">${fmt(c.aa, true)}</td>
+        <td class="num mono">${fmt(c.ba, true)}</td><td class="num mono">${fmt(c.bc, true)}</td>
+        <td class="num mono">${fmt(c.twdvCf, true)}</td></tr>`; }).join('')}
+      </tbody>
+      <tfoot><tr class="font-semibold"><td colspan="4">Total — capital allowances (incl. balancing allowances)</td>
+        <td colspan="3" class="num mono">${fmt(t.claim, true)}</td>
+        <td class="num mono">${fmt(t.bc, true)}</td><td></td></tr></tfoot>
+    </table>
+    <p class="text-[11px] text-mut mt-1.5">Balancing charges are added back to adjusted income; allowances (including balancing allowances) are deducted. TWDV carried forward feeds next year's statement via the roll-forward tool.</p>
+  </div>`;
 }
 function tkCA(el) {
-  const total = S.caAssets.reduce((s,a) => s + caCompute(a).claim, 0);
+  const t = caTotals();
   el.innerHTML = `
   <div class="card card-pad">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-1">
-      <h2 class="font-bold text-[15px]">Capital allowance schedule — Schedule 3, ITA 1967</h2>
-      <span class="pill pill-info mono">Total claim ${fmtRM(total)}</span>
+      <h2 class="font-bold text-[15px]">Capital Allowance Statement — Schedule 3, ITA 1967</h2>
+      <div class="flex gap-1.5">
+        <span class="pill pill-info mono">Allowances ${fmtRM(t.claim)}</span>
+        ${t.bc ? `<span class="pill pill-warn mono">Balancing charge ${fmtRM(t.bc)}</span>` : ''}
+      </div>
     </div>
-    <p class="text-[12.5px] text-mut mb-4">Per-asset IA/AA. Initial allowance only in the year of acquisition; annual allowance stops once the asset is fully claimed. Non-commercial vehicles capped at RM100k QE (RM50k if cost &gt; RM150k — verify).</p>
-    <div class="overflow-x-auto"><table class="tbl min-w-[820px]">
-      <thead><tr><th class="w-[26%]">Asset</th><th class="w-[24%]">Class</th><th class="num">Cost (RM)</th><th>New this YA?</th><th class="num">Claimed b/f</th><th class="num">IA</th><th class="num">AA</th><th class="num">This YA</th><th></th></tr></thead>
+    <p class="text-[12.5px] text-mut mb-4">Per-asset with tax written-down value: IA in the year of acquisition, AA until fully claimed, and balancing allowance/charge on disposal (proceeds restricted to QE; BC capped at allowances claimed). Non-commercial vehicles: QE capped at RM100k (RM50k if cost &gt; RM150k — verify). "Claimed b/f" = total IA+AA claimed in prior YAs, from last year's statement.</p>
+    <div class="overflow-x-auto"><table class="tbl min-w-[1000px]">
+      <thead><tr><th class="w-[20%]">Asset</th><th class="w-[18%]">Class</th><th class="num">Cost (RM)</th><th>New this YA?</th><th class="num">Claimed b/f</th><th>Disposed?</th><th class="num">Proceeds</th><th class="num">TWDV b/f</th><th class="num">IA</th><th class="num">AA</th><th class="num">BA / (BC)</th><th class="num">TWDV c/f</th><th></th></tr></thead>
       <tbody>${S.caAssets.map((a,i) => { const c = caCompute(a); return `
         <tr>
-          <td><input class="field !py-1.5 !text-[13px]" value="${esc(a.desc)}" placeholder="e.g. CNC milling machine" onchange="S.caAssets[${i}].desc=this.value; saveState()"></td>
+          <td><input class="field !py-1.5 !text-[13px]" value="${esc(a.desc)}" placeholder="e.g. Scania prime mover" onchange="S.caAssets[${i}].desc=this.value; saveState()"></td>
           <td><select class="field !py-1.5 !text-[12px]" onchange="S.caAssets[${i}].cls=this.value; saveState(); renderToolkit()">
             ${CA_CLASSES.map(cl => `<option value="${cl[0]}" ${a.cls===cl[0]?'selected':''}>${cl[1]} (${cl[2]}/${cl[3]})</option>`).join('')}</select></td>
-          <td class="num"><input class="field mono !py-1.5 !text-right !w-28" value="${a.cost?fmt(num(a.cost)):''}" onchange="S.caAssets[${i}].cost=this.value; saveState(); renderToolkit()"></td>
-          <td><select class="field !py-1.5 !text-[12px] !w-20" onchange="S.caAssets[${i}].isNew=this.value; saveState(); renderToolkit()">
+          <td class="num"><input class="field mono !py-1.5 !text-right !w-24" value="${a.cost?fmt(num(a.cost)):''}" onchange="S.caAssets[${i}].cost=this.value; saveState(); renderToolkit()"></td>
+          <td><select class="field !py-1.5 !text-[12px] !w-16" onchange="S.caAssets[${i}].isNew=this.value; saveState(); renderToolkit()">
             <option value="no" ${a.isNew!=='yes'?'selected':''}>No</option><option value="yes" ${a.isNew==='yes'?'selected':''}>Yes</option></select></td>
-          <td class="num"><input class="field mono !py-1.5 !text-right !w-24" value="${a.priorClaimed?fmt(num(a.priorClaimed)):''}" onchange="S.caAssets[${i}].priorClaimed=this.value; saveState(); renderToolkit()"></td>
+          <td class="num"><input class="field mono !py-1.5 !text-right !w-20" value="${a.priorClaimed?fmt(num(a.priorClaimed)):''}" onchange="S.caAssets[${i}].priorClaimed=this.value; saveState(); renderToolkit()"></td>
+          <td><select class="field !py-1.5 !text-[12px] !w-16" onchange="S.caAssets[${i}].disposed=this.value; saveState(); renderToolkit()">
+            <option value="no" ${a.disposed!=='yes'?'selected':''}>No</option><option value="yes" ${a.disposed==='yes'?'selected':''}>Yes</option></select></td>
+          <td class="num">${a.disposed==='yes' ? `<input class="field mono !py-1.5 !text-right !w-20" value="${a.proceeds?fmt(num(a.proceeds)):''}" onchange="S.caAssets[${i}].proceeds=this.value; saveState(); renderToolkit()">` : ''}</td>
+          <td class="num mono">${fmt(c.twdvBf, true)}</td>
           <td class="num mono">${fmt(c.ia, true)}</td>
           <td class="num mono">${fmt(c.aa, true)}</td>
-          <td class="num mono font-semibold">${fmt(c.claim, true)}${c.capped?' <span class="pill pill-warn">QE capped</span>':''}</td>
+          <td class="num mono">${c.bc ? '(' + fmt(c.bc) + ')' : fmt(c.ba, true)}</td>
+          <td class="num mono">${fmt(c.twdvCf, true)}${c.capped?' <span class="pill pill-warn !text-[9px]">capped</span>':''}</td>
           <td><button class="btn btn-ghost !px-1.5 !py-1" onclick="S.caAssets.splice(${i},1); saveState(); renderToolkit()" aria-label="Remove asset">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#D70015" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button></td>
-        </tr>`; }).join('') || '<tr><td colspan="9" class="text-center text-mut py-6">No assets yet — add from the fixed asset register.</td></tr>'}
+        </tr>`; }).join('') || '<tr><td colspan="13" class="text-center text-mut py-6">No assets yet — add from the fixed asset register.</td></tr>'}
       </tbody></table></div>
-    <div class="flex flex-wrap gap-2 mt-3">
-      <button class="btn btn-ghost" onclick="S.caAssets.push({id:nid(), desc:'', cls:'plant', cost:'', isNew:'no', priorClaimed:''}); saveState(); renderToolkit()">
+    <div class="flex flex-wrap gap-2 mt-3 no-print">
+      <button class="btn btn-ghost" onclick="S.caAssets.push({id:nid(), desc:'', cls:'plant', cost:'', isNew:'no', priorClaimed:'', disposed:'no', proceeds:''}); saveState(); renderToolkit()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> Add asset</button>
-      <button class="btn btn-pri" onclick="S.tax.ca = String(${total}); S.tax._touched = true; saveState(); toast('RM ${fmt(total)} applied to the tax computation'); show('tax')">
-        Apply ${fmtRM(total)} to tax computation</button>
+      <button class="btn btn-pri" onclick="const t=caTotals(); S.tax.ca=String(t.claim); S.tax.bc=String(t.bc); S.tax._touched=true; saveState(); toast('Applied — allowances ' + fmtRM(t.claim) + (t.bc ? ', balancing charge ' + fmtRM(t.bc) : '')); show('tax')">
+        Apply to tax computation</button>
+      <button class="btn btn-ghost" onclick="window.print()">Print statement</button>
     </div>
+    ${caStatementHTML()}
   </div>`;
 }
 /* confirmation letters */
@@ -3133,6 +3212,111 @@ function bmPushToTest() {
   saveState(); renderToolkit();
   toast(`Added ${fmtRM(credits)} credits (${fmtRM(nonSales)} non-sales) to the bank-in test`);
 }
+/* ---------- missing-transaction detector (statement vs cash book) ---------- */
+/* The practitioner's headache: the bank statement shows transactions the
+   client never recorded, and someone has to find them line by line and key
+   the entries back in. Load the client's cash book export next to the parsed
+   statement; every statement line with no cash-book match is an unrecorded
+   transaction. One click reconstructs the ENTRIES (as an audit adjustment,
+   supported by the bank statement itself — proper third-party evidence) and
+   prints the reconstruction working paper. The system does not fabricate
+   invoices: the missing source documents are requested from the client via
+   the query log instead. */
+const BM_RECON_CAT = { 'customer receipt':'REV', 'other credit':'OTHINC', 'supplier payment':'ADMIN',
+  'payroll':'ADMIN', 'statutory (EPF/SOCSO/LHDN)':'ADMIN', 'financing (loan/HP)':'BORR',
+  'rent':'ADMIN', 'fuel/fleet':'COS', 'bank charges':'ADMIN', 'unclassified':'SUSP' };
+function bmDateVal(dstr) {
+  const m = String(dstr).match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/); if (!m) return null;
+  const y = m[3].length === 2 ? '20' + m[3] : m[3];
+  return new Date(`${y}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}T00:00:00`).getTime();
+}
+async function bmLoadCashbook(src) {
+  let rows, name;
+  if (src === 'paste') {
+    rows = bmParseText($('bm-cb-paste').value); name = 'pasted cash book';
+  } else {
+    const meta = (await vaultListRows(S.id)).find(f => f.id === src);
+    if (!meta) { toast('File not found'); return; }
+    const { data, error } = await sb.storage.from('evidence').download(meta.storage_path);
+    if (error) { toast('Could not download the file'); return; }
+    rows = bmParseText(await data.text()); name = meta.file_name;
+  }
+  if (!rows.length) { toast('No lines with a date and an amount recognised'); return; }
+  S.bankmatch.cb = { name, rows };
+  bmReconcile();
+  saveState(); renderToolkit();
+}
+function bmReconcile() {
+  const stmt = (S.bankmatch || {}).rows || [];
+  const cb = ((S.bankmatch || {}).cb || {}).rows || [];
+  const WINDOW = 5 * 86400000;                 // ±5 days
+  const used = new Set();
+  for (const r of stmt) {
+    r.matched = false;
+    const amt = r.dr || r.cr, dv = bmDateVal(r.date);
+    for (let j = 0; j < cb.length; j++) {
+      if (used.has(j)) continue;
+      const c = cb[j], cAmt = c.dr || c.cr;
+      if (Math.abs(cAmt - amt) > 0.01) continue;
+      const cdv = bmDateVal(c.date);
+      if (dv && cdv && Math.abs(dv - cdv) > WINDOW) continue;
+      r.matched = true; c.matched = true; used.add(j); break;
+    }
+  }
+}
+function bmUnmatched() {
+  const stmt = ((S.bankmatch || {}).rows || []).filter(r => !r.matched && r.cls !== 'internal transfer');
+  const cbRows = (((S.bankmatch || {}).cb || {}).rows || []).filter(c => !c.matched);
+  return { stmt, cbRows };
+}
+function bmReconstruct() {
+  if (guardArchived()) return;
+  const { stmt } = bmUnmatched();
+  if (!stmt.length) { toast('Nothing to reconstruct — every statement line is matched'); return; }
+  // one balanced AJE: per-class P&L/BS lines with cash as the balancing leg
+  const agg = {};   // cat -> raw amount (+dr / -cr)
+  let cashNet = 0;  // raw movement on CASH
+  for (const r of stmt) {
+    let cat = BM_RECON_CAT[r.cls];
+    if (r.cls === 'director') cat = r.cr > 0 ? 'DIROWE' : 'DIRADV';
+    if (!cat) continue;
+    if (r.cr > 0) { cashNet += r.cr; agg[cat] = (agg[cat] || 0) - r.cr; }   // money in: Dr cash, Cr class
+    else          { cashNet -= r.dr; agg[cat] = (agg[cat] || 0) + r.dr; }   // money out: Cr cash, Dr class
+  }
+  const entries = Object.entries(agg).map(([cat, amt]) => ({ cat, label: CAT[cat].label, amt }));
+  entries.push({ cat:'CASH', label:'Cash and bank balances', amt: cashNet });
+  S.adjustments.push({ id: nid(), manual: true,
+    desc: `Reconstruct ${stmt.length} unrecorded transaction(s) per ${S.bankmatch.srcName} (see reconstruction working paper)`,
+    entries });
+  logActivity('Reconstructed unrecorded transactions', `${stmt.length} line(s) from ${S.bankmatch.srcName}, net cash ${fmtRM(Math.abs(cashNet))}`);
+  saveState(); renderToolkit(); updateTop();
+  toast(`${stmt.length} unrecorded transaction(s) posted as one adjustment — FS updated`);
+}
+async function bmMissingDocsQuery() {
+  const { stmt } = bmUnmatched();
+  if (!stmt.length) return;
+  const list = stmt.map(r => `${r.date} "${r.desc}" ${r.dr ? 'DR ' + fmt(r.dr) : 'CR ' + fmt(r.cr)}`).join('; ');
+  await queryAdd('query',
+    `Unrecorded transactions found on ${S.bankmatch.srcName} with no entry in the cash book — please provide the source documents (invoices/receipts/vouchers) and explain why they were not recorded: ${list}`,
+    null, 'C');
+  toast('Query raised for the missing source documents');
+}
+function bmReconWpHTML() {
+  const { stmt } = bmUnmatched();
+  if (!stmt.length) return '';
+  return `
+  <div class="fs-doc mt-3">
+    <div class="font-bold text-[14px] mb-1">${esc(S.setup.name)} — Reconstruction of unrecorded transactions (ref C)</div>
+    <div class="text-[11.5px] text-mut mb-2">Source: ${esc(S.bankmatch.srcName)} vs ${esc((S.bankmatch.cb||{}).name || 'cash book')} · amount-and-date matching (±5 days). Audit evidence for each entry is the bank statement line itself (third-party document); client source documents requested via the query log.</div>
+    <table class="tbl">
+      <thead><tr><th>Date</th><th>Statement description</th><th class="num">DR</th><th class="num">CR</th><th>Recorded as</th></tr></thead>
+      <tbody>${stmt.map(r => { let cat = BM_RECON_CAT[r.cls]; if (r.cls === 'director') cat = r.cr > 0 ? 'DIROWE' : 'DIRADV';
+        return `<tr><td class="mono text-[11px]">${esc(r.date)}</td><td class="text-[12px]">${esc(r.desc)}</td>
+        <td class="num mono">${r.dr ? fmt(r.dr) : ''}</td><td class="num mono">${r.cr ? fmt(r.cr) : ''}</td>
+        <td class="text-[12px]">${cat ? (r.cr > 0 ? 'Dr Cash / Cr ' : 'Dr ') + CAT[cat].label + (r.cr > 0 ? '' : ' / Cr Cash') : 'excluded'}</td></tr>`; }).join('')}
+      </tbody></table>
+  </div>`;
+}
 function tkBankin(el) {
   const m = S.tb.length ? model() : null;
   const b = S.bankin || {};
@@ -3152,10 +3336,14 @@ function tkBankin(el) {
   bankmatchHTML(el, { m, b, credits, nonSales, netBankIn, recorded, gap, gapPct, verdict, bm, bmRows, bmCr, bmDr, byCls, flagged });
 }
 async function bankmatchHTML(el, v) {
-  let vaultOpts = '';
+  let vaultOpts = '', cbOpts = '';
   try {
-    const files = (await vaultListRows(S.id)).filter(f => f.category === 'Bank statements & confirmations');
-    vaultOpts = files.map(f => `<option value="${f.id}">${esc(f.file_name)}</option>`).join('');
+    const all = await vaultListRows(S.id);
+    vaultOpts = all.filter(f => f.category === 'Bank statements & confirmations')
+      .map(f => `<option value="${f.id}">${esc(f.file_name)}</option>`).join('');
+    // cash book / ledger exports can be filed anywhere — offer every text file
+    cbOpts = all.filter(f => /\.(csv|txt)$/i.test(f.file_name))
+      .map(f => `<option value="${f.id}">${esc(f.file_name)}</option>`).join('');
   } catch(e) {}
   el.innerHTML = `
   <div class="card card-pad mb-4">
@@ -3196,6 +3384,46 @@ async function bankmatchHTML(el, v) {
     <div class="flex flex-wrap gap-1.5 mt-2">${Object.entries(v.byCls).sort((a,b)=>b[1]-a[1]).map(([c,amt]) =>
       `<span class="pill pill-mut !text-[11px] mono">${c}: ${fmtRM(amt)}</span>`).join('')}</div>` : ''}
   </div>
+  ${v.bmRows.length ? (() => {
+    const cb = (v.bm.cb || {});
+    const un = bmUnmatched();
+    return `
+  <div class="card card-pad mb-4">
+    <h2 class="font-bold text-[15px] mb-1">Missing-transaction detector</h2>
+    <p class="text-[12.5px] text-mut mb-3">Load the client's <strong>cash book / bank ledger export</strong> (from SQL Account, AutoCount, UBS — any CSV with date and amount columns). Every statement line with no matching entry is an unrecorded transaction — the system reconstructs the entries in one click, supported by the bank statement itself, and requests the missing invoices from the client via the query log. <em>It reconstructs entries, never source documents.</em></p>
+    <div class="flex flex-wrap items-end gap-2 mb-2 no-print">
+      ${cbOpts ? `<div><label class="fieldlbl">Cash book from the vault</label>
+        <select class="field !w-72" id="bm-cb-vault">${cbOpts}</select></div>
+      <button class="btn btn-pri" onclick="bmLoadCashbook($('bm-cb-vault').value)">Match against statement</button>` : ''}
+    </div>
+    <details class="mb-2"><summary class="text-[12.5px] text-indigo cursor-pointer">…or paste cash book lines</summary>
+      <textarea class="field mono !text-[12px] mt-2" id="bm-cb-paste" rows="5" placeholder="Date, Description, Debit, Credit — one line per entry"></textarea>
+      <button class="btn btn-ghost mt-2" onclick="bmLoadCashbook('paste')">Parse &amp; match</button>
+    </details>
+    ${cb.rows ? `
+    <div class="flex flex-wrap gap-2 items-center mb-2">
+      <span class="pill pill-info">${esc(cb.name)} · ${cb.rows.length} entries</span>
+      <span class="pill ${un.stmt.length ? 'pill-risk' : 'pill-ok'}">${un.stmt.length ? un.stmt.length + ' in the BANK but NOT in the books' : 'every statement line matched'}</span>
+      ${un.cbRows.length ? `<span class="pill pill-warn">${un.cbRows.length} in the books but not on this statement</span>` : ''}
+    </div>
+    ${un.stmt.length ? `
+    <table class="tbl"><thead><tr><th>Date</th><th>Statement line (unrecorded)</th><th class="num">DR</th><th class="num">CR</th><th>Will be recorded as</th></tr></thead>
+    <tbody>${un.stmt.map(r => { let cat = BM_RECON_CAT[r.cls]; if (r.cls === 'director') cat = r.cr > 0 ? 'DIROWE' : 'DIRADV';
+      return `<tr class="bg-warnbg/40"><td class="mono text-[11px]">${esc(r.date)}</td><td class="text-[12px]">${esc(r.desc)}</td>
+      <td class="num mono text-[12px]">${r.dr ? fmt(r.dr) : ''}</td><td class="num mono text-[12px]">${r.cr ? fmt(r.cr) : ''}</td>
+      <td class="text-[11.5px]">${cat ? (r.cr > 0 ? 'Dr Cash / Cr ' + CAT[cat].label : 'Dr ' + CAT[cat].label + ' / Cr Cash') : 'excluded (internal)'}</td></tr>`; }).join('')}
+    </tbody></table>
+    <div class="flex flex-wrap gap-2 mt-3 no-print">
+      <button class="btn btn-mint" onclick="bmReconstruct()">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        Reconstruct ${un.stmt.length} entr${un.stmt.length===1?'y':'ies'} (one adjustment)</button>
+      <button class="btn btn-ghost" onclick="bmMissingDocsQuery()">Request the missing invoices (query log)</button>
+      <button class="btn btn-ghost" onclick="window.print()">Print reconstruction working paper</button>
+    </div>
+    ${bmReconWpHTML()}` : ''}
+    ${un.cbRows.length ? `<details class="mt-3"><summary class="text-[12.5px] text-indigo cursor-pointer">${un.cbRows.length} cash-book entr${un.cbRows.length===1?'y':'ies'} not on this statement (unpresented items / other accounts / errors)</summary>
+      <table class="tbl mt-2"><tbody>${un.cbRows.slice(0,30).map(c => `<tr><td class="mono text-[11px]">${esc(c.date)}</td><td class="text-[12px]">${esc(c.desc)}</td><td class="num mono text-[12px]">${fmt(c.dr || c.cr)}</td></tr>`).join('')}</tbody></table></details>` : ''}` : ''}
+  </div>`; })() : ''}
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
     <div class="card card-pad">
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
