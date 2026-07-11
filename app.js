@@ -27,7 +27,7 @@ const BLANK = () => ({
   adjustments: [],        // {id, findingId, desc, entries:[{cat,label,amt}]}  amt: +dr / -cr
   findingStatus: {},      // findingId -> 'adjusted' | 'noted'
   audit: { benchmark:'revenue', pm:'0.75' },
-  tax: { entertain:'', fines:'', donations:'', otherAdd:'', exemptInc:'', ca:'', bc:'', losses:'', cp204:'' },
+  tax: { entertain:'', fines:'', donations:'', otherAdd:'', exemptInc:'', ca:'', caBf:'', bc:'', losses:'', cp204:'' },
   sign: { firm:'', af:'', partner:'', approval:'', place:'', date:'', opinion:'unmodified',
           goingconcern:false, otherinfo:true },
   notes: {},              // note-detail inputs that kill the FS-notes placeholders
@@ -1142,8 +1142,17 @@ function taxComputeCore() {
   const dirAdvDeemed = m.nat.DIRADV > 0 ? Math.round(m.nat.DIRADV * 0.0295) : 0;
   const addbacks = dep + T('entertain') + T('fines') + T('donations') + T('otherAdd') + T('bc') + dirAdvDeemed;
   const adjusted = m.pbt + addbacks - T('exemptInc');
-  const afterCA = Math.max(adjusted - T('ca'), 0);
-  const ci = Math.max(afterCA - T('losses'), 0);
+  // Capital allowances: current-year + unabsorbed b/f, absorbed only up to
+  // adjusted business income; the unabsorbed balance carries forward
+  // (indefinitely, same business — s.75A shareholding continuity caveat).
+  const caAvail = T('ca') + T('caBf');
+  const caUtil = Math.min(Math.max(adjusted, 0), caAvail);
+  const caCf = caAvail - caUtil;
+  const afterCA = Math.max(adjusted - caUtil, 0);
+  // Business losses b/f: absorbed up to statutory income; 10-YA carry-forward limit.
+  const lossUtil = Math.min(afterCA, T('losses'));
+  const lossCf = T('losses') - lossUtil;
+  const ci = Math.max(afterCA - lossUtil, 0);
   let tax = 0; const bands = [];
   if (sme.ok) {
     const b1 = Math.min(ci, 150000), b2 = Math.min(Math.max(ci-150000,0), 450000), b3 = Math.max(ci-600000, 0);
@@ -1153,15 +1162,15 @@ function taxComputeCore() {
     tax = b1*.15 + b2*.17 + b3*.24;
   } else { bands.push(['Chargeable income @ 24%', ci*.24]); tax = ci*.24; }
   tax = Math.round(tax);
-  return { m, sme, T, dep, dirAdvDeemed, addbacks, adjusted, afterCA, ci, bands, tax };
+  return { m, sme, T, dep, dirAdvDeemed, addbacks, adjusted, caAvail, caUtil, caCf, afterCA, lossUtil, lossCf, ci, bands, tax };
 }
 function renderTax() {
   const m = model();
   $('tax-ya').textContent = S.setup.fye ? new Date(S.setup.fye).getFullYear() : '—';
   // bind inputs
   const map = { 'tax-entertain':'entertain','tax-fines':'fines','tax-donations':'donations','tax-other-add':'otherAdd',
-    'tax-exempt-inc':'exemptInc','tax-ca':'ca','tax-losses':'losses','tax-cp204':'cp204' };
-  for (const [id,k] of Object.entries(map)) { const el = $(id); if (document.activeElement !== el) el.value = S.tax[k]; }
+    'tax-exempt-inc':'exemptInc','tax-ca':'ca','tax-cabf':'caBf','tax-losses':'losses','tax-cp204':'cp204' };
+  for (const [id,k] of Object.entries(map)) { const el = $(id); if (el && document.activeElement !== el) el.value = S.tax[k] || ''; }
 
   const sme = smeEligible();
   $('tax-sme-box').innerHTML = `
@@ -1172,8 +1181,9 @@ function renderTax() {
       ? 'Eligible — 15% on first RM150k, 17% on next RM450k, 24% on the balance.'
       : 'Not eligible — flat 24% on all chargeable income.'}</div>`;
 
-  if (!S.tb.length) { $('tax-comp').innerHTML = '<div class="text-mut text-[13px]">Import a trial balance first.</div>'; return; }
-  const { T, dep, dirAdvDeemed, adjusted, afterCA, ci, bands, tax } = taxComputeCore();
+  if (!S.tb.length) { $('tax-comp').innerHTML = '<div class="text-mut text-[13px]">Import a trial balance first.</div>';
+    $('tax-dt').innerHTML = ''; $('tax-cp204-plan').innerHTML = ''; return; }
+  const { T, dep, dirAdvDeemed, adjusted, caAvail, caUtil, caCf, afterCA, lossUtil, lossCf, ci, bands, tax } = taxComputeCore();
   const cp204 = T('cp204');
   const bal = tax - cp204;
   const underEst = cp204 > 0 && tax > 0 && (tax - cp204) / tax > 0.30;
@@ -1193,25 +1203,93 @@ function renderTax() {
       <tr><td class="font-semibold pt-2" colspan="2">Less:</td></tr>
       ${T('exemptInc') ? row('Non-taxable / exempt income', -T('exemptInc'), {indent:1}) : ''}
       ${row('Adjusted income', adjusted, {line:1})}
-      ${row('Less: capital allowances (Sch 3 — per CA statement)', -T('ca'), {indent:1})}
+      ${T('ca') ? row('Less: capital allowances — current YA (per CA statement)', -T('ca'), {indent:1}) : ''}
+      ${T('caBf') ? row('Less: unabsorbed capital allowances b/f', -T('caBf'), {indent:1}) : ''}
+      ${caAvail > caUtil ? row('Restricted to adjusted income — CA absorbed', -caUtil, {indent:1}) : ''}
       ${row('Statutory income', afterCA, {line:1})}
-      ${T('losses') ? row('Less: unabsorbed losses b/f (10-YA carry-forward limit)', -T('losses'), {indent:1}) : ''}
+      ${T('losses') ? row('Less: business losses b/f absorbed (10-YA limit)', -lossUtil, {indent:1}) : ''}
       ${row('Chargeable income', ci, {line:1})}
       ${bands.map(b => row(b[0], b[1], {indent:1})).join('')}
       ${row('Tax charge for YA', tax, {total:1})}
       ${cp204 ? row('Less: CP204 instalments paid', -cp204) : ''}
       ${cp204 ? row(bal >= 0 ? 'Balance payable with Form C (CP207)' : 'Tax overpaid — refundable', bal, {line:1}) : ''}
+      ${(caCf > 0 || lossCf > 0) ? `<tr><td class="font-semibold pt-3" colspan="2">Carried forward to next YA (the tax agent's continuity schedule)</td></tr>` : ''}
+      ${caCf > 0 ? row('Unabsorbed capital allowances c/f (indefinite, same business)', caCf, {indent:1}) : ''}
+      ${lossCf > 0 ? row('Unabsorbed business losses c/f (10-YA limit — track by YA layer)', lossCf, {indent:1}) : ''}
     </table>
     ${underEst ? `<div class="mt-3 p-2.5 rounded-lg bg-warnbg text-warn text-[12.5px] font-medium">CP204 underestimation: actual tax exceeds the estimate by more than 30% — the excess over the 30% buffer attracts a 10% penalty under s.107C(10). Consider CP204 revisions (6th/9th month) next year.</div>` : ''}
     ${S.caAssets.length ? caStatementHTML() : `<div class="mt-3 p-2.5 rounded-lg bg-indigosoft text-[12.5px]">
       <strong>No Capital Allowance Statement yet.</strong> The CA figure above needs its supporting schedule (per-asset TWDV, IA/AA, balancing charges) — build it in
       <button class="text-indigo font-medium hover:underline" onclick="show('toolkit'); tkTab='ca'; renderToolkit()">Toolkit → Capital allowances</button> and apply it here.</div>`}
     <div class="mt-3 text-[12px] text-mut">Capital allowance quick rates (IA/AA): heavy machinery 20/20 · general plant 20/14 · office equipment &amp; furniture 20/10 · computers &amp; ICT 20/20 (accelerated options exist) · motor vehicles 20/20 (non-commercial QE capped at RM50k–RM100k).</div>`;
+
+  // ---- deferred tax (MPERS s.29): accounting NBV vs tax written-down value ----
+  const dtEl = $('tax-dt');
+  if (dtEl) {
+    if (S.caAssets.length) {
+      const nbv = m.ppeNet + m.nat.INTANG;
+      const twdv = S.caAssets.reduce((s, a) => s + caCompute(a).twdvCf, 0);
+      const tempDiff = nbv - twdv;
+      const dtRate = 0.24;
+      const dtTarget = Math.round(tempDiff * dtRate);
+      const dtBook = m.nat.DEFTAX;
+      const dtDelta = dtTarget - dtBook;
+      dtEl.innerHTML = `
+      <div class="p-3 rounded-xl border border-line">
+        <div class="font-semibold text-[13.5px] mb-1">Deferred tax — computed from the file (MPERS s.29)</div>
+        <table class="fs-doc" style="width:100%">
+          <tr><td>Carrying amount of PPE &amp; intangibles (per adjusted TB)</td><td class="num mono" style="width:120px">${fmt(nbv, true)}</td></tr>
+          <tr><td>Tax written-down value (per CA statement)</td><td class="num mono">${fmt(twdv, true)}</td></tr>
+          <tr class="fs-line"><td>Taxable temporary difference</td><td class="num mono">${fmt(tempDiff, true)}</td></tr>
+          <tr><td>Deferred tax ${tempDiff >= 0 ? 'liability' : 'asset'} @ 24%</td><td class="num mono">${fmt(Math.abs(dtTarget), true)}</td></tr>
+          <tr><td>Per the books (deferred tax balance)</td><td class="num mono">${fmt(dtBook, true)}</td></tr>
+          <tr class="fs-total"><td>${Math.abs(dtDelta) < 1 ? 'No adjustment required' : (dtDelta > 0 ? 'Under-provided — charge to P&amp;L' : 'Over-provided — credit to P&amp;L')}</td><td class="num mono">${fmt(Math.abs(dtDelta), true)}</td></tr>
+        </table>
+        ${Math.abs(dtDelta) >= 1 ? `<button class="btn btn-mint !py-1.5 !text-[12px] mt-2 no-print" onclick="dtPostAje(${dtDelta})">Post deferred tax adjustment (${fmtRM(Math.abs(dtDelta))})</button>` : ''}
+        <p class="text-[11px] text-mut mt-2">Measured at the 24% headline rate — apply a blended SME-tier rate if the reversal pattern justifies it (judgement, document on B-series). Deferred tax assets on unabsorbed losses/CA (${fmtRM(caCf + lossCf)}) are recognised only to the extent future taxable profits are probable — partner call, not automated.</p>
+      </div>`;
+    } else dtEl.innerHTML = '';
+  }
+
+  // ---- CP204 planner for the next YA ----
+  const cpEl = $('tax-cp204-plan');
+  if (cpEl && S.setup.fye) {
+    const nextStart = addDays(S.setup.fye, 1);
+    const nextYa = new Date(S.setup.fye).getFullYear() + 1;
+    const floor85 = Math.ceil(cp204 * 0.85);
+    const suggested = Math.max(tax, floor85);
+    const monthly = Math.ceil(suggested / 12);
+    const dueBy = addDays(nextStart, -30);
+    const rev6 = addMonths(nextStart, 5), rev9 = addMonths(nextStart, 8);
+    cpEl.innerHTML = `
+    <div class="p-3 rounded-xl border border-line">
+      <div class="font-semibold text-[13.5px] mb-1">CP204 planner — YA ${nextYa}</div>
+      <table class="fs-doc" style="width:100%">
+        <tr><td>Statutory floor — 85% of this year's estimate (s.107C(3))</td><td class="num mono" style="width:120px">${cp204 ? fmt(floor85, true) : '—'}</td></tr>
+        <tr><td>This year's computed tax (the realistic base)</td><td class="num mono">${fmt(tax, true)}</td></tr>
+        <tr class="fs-line"><td>Suggested estimate (higher of the two)</td><td class="num mono">${fmt(suggested, true)}</td></tr>
+        <tr class="fs-total"><td>Monthly instalment (12 instalments)</td><td class="num mono">${fmt(monthly, true)}</td></tr>
+      </table>
+      <p class="text-[11.5px] text-mut mt-2">Submit e-CP204 by <strong>${dMY(dueBy)}</strong> (30 days before the basis period). Revision windows (CP204A): 6th month ~ <strong>${dMY(rev6)}</strong>, 9th month ~ <strong>${dMY(rev9)}</strong>. Underestimating below 70% of final tax attracts the 10% s.107C(10) penalty on the shortfall beyond the buffer${cp204 ? '' : ' — enter this year’s CP204 paid to activate the 85% floor'}.</p>
+    </div>`;
+  } else if (cpEl) cpEl.innerHTML = '';
+}
+function dtPostAje(delta) {
+  if (guardArchived()) return;
+  const amt = Math.round(Math.abs(delta));
+  const entries = delta > 0
+    ? [ {cat:'TAXEXP', label:'Taxation — deferred', amt: amt}, {cat:'DEFTAX', label:'Deferred tax liability', amt: -amt} ]
+    : [ {cat:'DEFTAX', label:'Deferred tax liability', amt: amt}, {cat:'TAXEXP', label:'Taxation — deferred', amt: -amt} ];
+  S.adjustments.push({ id:nid(), manual:true,
+    desc:`Deferred tax ${delta > 0 ? 'charge' : 'credit'} per NBV-vs-TWDV computation (MPERS s.29)`, entries });
+  logActivity('Posted deferred tax adjustment', fmtRM(amt));
+  saveState(); renderTax(); updateTop();
+  toast('Deferred tax adjustment posted — FS updated');
 }
 document.addEventListener('input', e => {
   if (e.target.classList && e.target.classList.contains('tax-in')) {
     const map = { 'tax-entertain':'entertain','tax-fines':'fines','tax-donations':'donations','tax-other-add':'otherAdd',
-      'tax-exempt-inc':'exemptInc','tax-ca':'ca','tax-losses':'losses','tax-cp204':'cp204' };
+      'tax-exempt-inc':'exemptInc','tax-ca':'ca','tax-cabf':'caBf','tax-losses':'losses','tax-cp204':'cp204' };
     S.tax[map[e.target.id]] = e.target.value; S.tax._touched = true;
     clearTimeout(window._taxT); window._taxT = setTimeout(()=>{ renderTax(); saveState(); }, 500);
   }
@@ -2395,6 +2473,9 @@ async function renderVault() {
       <div class="flex items-center justify-between mb-2">
         <div class="font-semibold text-[13.5px]">${cat}</div>
         <div class="flex items-center gap-1.5">
+          ${fs.length && cat === 'Bank statements & confirmations' ? `<button class="btn btn-ghost !px-2 !py-1 !text-[11px]" onclick="show('toolkit'); tkTab='bankin'; renderToolkit()" title="Parse the statement line-by-line, find transactions missing from the books, reconstruct the entries">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>
+            Match lines</button>` : ''}
           ${fs.length ? `<button class="btn btn-ghost !px-2 !py-1 !text-[11px]" onclick="vaultAnalyze('${esc(cat).replace(/'/g,"\\'")}')" title="AI reads every document filed in this category in full">
             <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.7L19.6 10l-5.7 1.9L12 17.6l-1.9-5.7L4.4 10l5.7-1.9z"/></svg>
             Analyze with AI</button>` : ''}
@@ -2918,10 +2999,12 @@ function tkFormC(el) {
       ${tc.dirAdvDeemed ? row('+','s.140B deemed interest on advances to directors', tc.dirAdvDeemed, {indent:1}) : ''}
       ${tc.T('exemptInc') ? row('−','Non-taxable / exempt income', -tc.T('exemptInc'), {indent:1}) : ''}
       ${row('','Adjusted income', tc.adjusted, {line:1})}
-      ${row('−','Capital allowances absorbed (Sch 3 — per CA schedule)', -tc.T('ca'), {indent:1})}
+      ${row('−','Capital allowances absorbed (current + b/f, per CA statement)', -tc.caUtil, {indent:1})}
       ${row('','Statutory business income', tc.afterCA, {line:1})}
-      ${tc.T('losses') ? row('−','Unabsorbed business losses b/f (s.44(2), 10-YA limit)', -tc.T('losses'), {indent:1}) : ''}
+      ${tc.lossUtil ? row('−','Unabsorbed business losses b/f absorbed (s.44(2), 10-YA limit)', -tc.lossUtil, {indent:1}) : ''}
       ${row('','CHARGEABLE INCOME', tc.ci, {total:1})}
+      ${tc.caCf > 0 ? row('c/f','Unabsorbed capital allowances carried forward', tc.caCf, {indent:1}) : ''}
+      ${tc.lossCf > 0 ? row('c/f','Unabsorbed business losses carried forward', tc.lossCf, {indent:1}) : ''}
       <tr><td colspan="3" class="font-semibold pt-3">Part: Tax computation</td></tr>
       ${tc.bands.map(b => row('', b[0], Math.round(b[1]), {indent:1})).join('')}
       ${row('','TAX CHARGEABLE', tc.tax, {total:1})}
@@ -3301,6 +3384,47 @@ async function bmMissingDocsQuery() {
     null, 'C');
   toast('Query raised for the missing source documents');
 }
+/* Reconstructed voucher hub — the "redo the paperwork under one roof" ask,
+   done the legitimate way: for each unrecorded transaction the system
+   pre-fills a receipt/payment VOUCHER carrying the bank-statement source
+   reference and an explicit "reconstructed" label, for the CLIENT to
+   complete, authorise and sign. It never fabricates a contemporaneous
+   invoice — and for receipts that are sales, MyInvois e-invoicing by the
+   client is flagged as the required document. */
+let bmShowVouchers = false;
+function bmVouchersHTML() {
+  const { stmt } = bmUnmatched();
+  if (!stmt.length) return '';
+  let rv = 0, pv = 0;
+  return `
+  <div class="mt-3">
+    ${stmt.map(r => {
+      const isReceipt = r.cr > 0;
+      const ref = isReceipt ? 'RV-R' + String(++rv).padStart(3,'0') : 'PV-R' + String(++pv).padStart(3,'0');
+      let cat = BM_RECON_CAT[r.cls]; if (r.cls === 'director') cat = isReceipt ? 'DIROWE' : 'DIRADV';
+      return `
+      <div class="fs-doc mb-3" style="border:1px solid #D2D2D7; border-radius:12px; padding:1rem 1.25rem; page-break-inside:avoid">
+        <div class="flex items-start justify-between">
+          <div>
+            <div class="font-bold text-[13.5px]">${esc(S.setup.name)} <span class="font-normal text-[11px] text-mut">(${esc(S.setup.regno) || 'Reg. No.'})</span></div>
+            <div class="font-semibold text-[12.5px] mt-0.5">${isReceipt ? 'RECEIPT VOUCHER' : 'PAYMENT VOUCHER'} — <span class="text-warn">RECONSTRUCTED</span></div>
+          </div>
+          <div class="text-right text-[11.5px] mono">${ref}<br>${esc(r.date)}</div>
+        </div>
+        <table class="fs-doc mt-2" style="width:100%">
+          <tr><td style="width:32%" class="font-semibold">${isReceipt ? 'Received from' : 'Paid to'}</td><td>${esc(r.desc)}</td></tr>
+          <tr><td class="font-semibold">Amount</td><td class="mono">RM ${fmt(isReceipt ? r.cr : r.dr)}</td></tr>
+          <tr><td class="font-semibold">Account</td><td>${cat ? CAT[cat].label : '[to classify]'}</td></tr>
+          <tr><td class="font-semibold">Source</td><td class="text-[11.5px]">Bank statement line — ${esc(S.bankmatch.srcName)}. No contemporaneous source document was provided; this voucher reconstructs the record and requires the client's confirmation below.</td></tr>
+        </table>
+        ${isReceipt && r.cls === 'customer receipt' ? `<div class="text-[11px] text-warn mt-1.5">If this receipt is a sale, the client must issue the corresponding e-invoice via MyInvois (consolidated e-invoice rules may apply) — this voucher does not replace it.</div>` : ''}
+        <div class="grid grid-cols-2 gap-8 mt-4 text-[11.5px]">
+          <div><div style="border-top:1px solid #0B1437; padding-top:.3rem">Prepared by (audit team)<br>Date: ____________</div></div>
+          <div><div style="border-top:1px solid #0B1437; padding-top:.3rem">Confirmed &amp; authorised by (director)<br>Date: ____________</div></div>
+        </div>
+      </div>`; }).join('')}
+  </div>`;
+}
 function bmReconWpHTML() {
   const { stmt } = bmUnmatched();
   if (!stmt.length) return '';
@@ -3417,10 +3541,12 @@ async function bankmatchHTML(el, v) {
       <button class="btn btn-mint" onclick="bmReconstruct()">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
         Reconstruct ${un.stmt.length} entr${un.stmt.length===1?'y':'ies'} (one adjustment)</button>
+      <button class="btn btn-ghost" onclick="bmShowVouchers=!bmShowVouchers; renderToolkit()">${bmShowVouchers ? 'Hide' : 'Generate'} reconstructed vouchers (${un.stmt.length})</button>
       <button class="btn btn-ghost" onclick="bmMissingDocsQuery()">Request the missing invoices (query log)</button>
-      <button class="btn btn-ghost" onclick="window.print()">Print reconstruction working paper</button>
+      <button class="btn btn-ghost" onclick="window.print()">Print working paper${bmShowVouchers ? ' + vouchers' : ''}</button>
     </div>
-    ${bmReconWpHTML()}` : ''}
+    ${bmReconWpHTML()}
+    ${bmShowVouchers ? bmVouchersHTML() : ''}` : ''}
     ${un.cbRows.length ? `<details class="mt-3"><summary class="text-[12.5px] text-indigo cursor-pointer">${un.cbRows.length} cash-book entr${un.cbRows.length===1?'y':'ies'} not on this statement (unpresented items / other accounts / errors)</summary>
       <table class="tbl mt-2"><tbody>${un.cbRows.slice(0,30).map(c => `<tr><td class="mono text-[11px]">${esc(c.date)}</td><td class="text-[12px]">${esc(c.desc)}</td><td class="num mono text-[12px]">${fmt(c.dr || c.cr)}</td></tr>`).join('')}</tbody></table></details>` : ''}` : ''}
   </div>`; })() : ''}

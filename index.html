@@ -675,15 +675,24 @@ tailwind.config = {
             <div><label class="fieldlbl">Unapproved donations</label><input class="field mono num-in tax-in" id="tax-donations" placeholder="0"></div>
             <div><label class="fieldlbl">Unrealised forex loss / other add-backs</label><input class="field mono num-in tax-in" id="tax-other-add" placeholder="0"></div>
             <div><label class="fieldlbl">Non-taxable income (e.g. exempt FD interest — single-tier dividends)</label><input class="field mono num-in tax-in" id="tax-exempt-inc" placeholder="0"></div>
-            <div><label class="fieldlbl">Capital allowances claimed (Sch 3)</label><input class="field mono num-in tax-in" id="tax-ca" placeholder="0"></div>
-            <div><label class="fieldlbl">Unabsorbed losses b/f utilised</label><input class="field mono num-in tax-in" id="tax-losses" placeholder="0"></div>
+            <div><label class="fieldlbl">Capital allowances — current YA (Sch 3)</label><input class="field mono num-in tax-in" id="tax-ca" placeholder="0"></div>
+            <div><label class="fieldlbl">Unabsorbed capital allowances b/f</label><input class="field mono num-in tax-in" id="tax-cabf" placeholder="0"></div>
+            <div><label class="fieldlbl">Unabsorbed business losses b/f (10-YA limit)</label><input class="field mono num-in tax-in" id="tax-losses" placeholder="0"></div>
             <div><label class="fieldlbl">CP204 instalments paid to date</label><input class="field mono num-in tax-in" id="tax-cp204" placeholder="0"></div>
           </div>
           <div class="mt-4 p-3 rounded-xl bg-indigosoft text-[12.5px]" id="tax-sme-box"></div>
+          <div class="mt-4" id="tax-dt"></div>
         </div>
         <div class="card card-pad">
-          <h2 class="font-bold text-[15px] mb-3">Tax computation — YA <span id="tax-ya" class="mono"></span></h2>
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="font-bold text-[15px]">Tax computation — YA <span id="tax-ya" class="mono"></span></h2>
+            <button class="btn btn-ghost !py-1.5 no-print" onclick="window.print()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
+              Print tax agent pack
+            </button>
+          </div>
           <div id="tax-comp"></div>
+          <div class="mt-4" id="tax-cp204-plan"></div>
         </div>
       </div>
     </section>
