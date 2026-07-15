@@ -223,6 +223,46 @@ function classify(name, drAmt, crAmt) {
   return drAmt >= crAmt ? 'ADMIN' : 'OP';
 }
 
+/* Classifier self-test — every account name that has EVER misclassified in
+   testing lives here with its required answer, and the battery runs at every
+   boot. RULES order is load-bearing: any future edit that breaks a known
+   case surfaces immediately as a console error + in-app warning, instead of
+   silently mis-stating a client's file months later. Add a case every time
+   a new misclassification is found. */
+const CLASSIFY_TESTS = [
+  ['Sales - hardware & building materials',0,100,'REV'],['Service revenue - software development',0,100,'REV'],
+  ['Scrap sales',0,100,'REV'],['Rental income - investment properties',0,100,'OTHINC'],
+  ['Transportation income - haulage',0,100,'REV'],['Contract revenue',0,100,'REV'],
+  ['Interest income - fixed deposits',0,100,'OTHINC'],['Management fee income',0,100,'OTHINC'],
+  ['Dividend income',0,100,'OTHINC'],['Deferred income',0,100,'OP'],
+  ['Raw materials consumed',100,0,'COS'],['Purchases - trading stock',100,0,'COS'],
+  ['Site wages & labour',100,0,'COS'],['Factory wages & production labour',100,0,'COS'],
+  ['Tyres & spare parts consumed',100,0,'COS'],['Subcontractor fees',100,0,'COS'],
+  ['Bank overdraft interest',100,0,'FIN'],['Building management fees',100,0,'ADMIN'],
+  ['Professional fees',100,0,'ADMIN'],['Audit fee',100,0,'ADMIN'],["Directors' remuneration",100,0,'ADMIN'],
+  ['Taxation',100,0,'TAXEXP'],['Provision for taxation',0,100,'TAXPAY'],
+  ['Sales tax payable',0,100,'OP'],['SST payable',0,100,'OP'],
+  ['Tenants deposits received',0,100,'OP'],['Utility deposits',100,0,'OR'],['Rental receivables',100,0,'OR'],
+  ['Retention sum receivable',100,0,'TR'],['Retention sum payable',0,100,'TP'],['Trade receivables',100,0,'TR'],
+  ['Plant & machinery - cost',100,0,'PPE'],['Freehold land & buildings - cost',100,0,'PPE'],
+  ['Kitchen equipment & renovation - cost',100,0,'PPE'],
+  ['Inventories - trading stock',100,0,'INV'],['Inventories - spares & tyres',100,0,'INV'],
+  ['Work-in-progress - contracts',100,0,'INV'],['Amount owing by director',100,0,'DIRADV'],
+];
+function runClassifierSelfTest() {
+  const fails = [];
+  for (const [n, dr, cr, want] of CLASSIFY_TESTS) {
+    const got = classify(n, dr, cr);
+    if (got !== want) fails.push(`"${n}": got ${got}, expected ${want}`);
+  }
+  if (fails.length) console.error(`CLASSIFIER SELF-TEST FAILING (${fails.length}/${CLASSIFY_TESTS.length}):\n` + fails.join('\n'));
+  return fails;
+}
+const _classifierFails = runClassifierSelfTest();
+if (_classifierFails.length) setTimeout(() => {
+  toast(`⚠ Classifier self-test failing ${_classifierFails.length} case(s) — imports may misclassify. See console.`);
+}, 2000);
+
 /* ---------------- aggregation / FS model ---------------- */
 /* Adjustment sign convention: entries carry amt as +debit / −credit in RAW dr/cr space;
    converted to natural sign per category at aggregation. */
@@ -509,6 +549,38 @@ function buildFindings() {
       'ISA 510 · ISA 710',
       `The prior-year column's balance sheet is out by ${fmtRM(mp.balGap)} (assets − liabilities − equity). The comparative column of the FS will not balance, and opening balances cannot be relied on until it does.`,
       'Re-agree every prior-year figure to the signed prior-year FS (enter each balance as a positive number as presented there; accumulated losses as a negative retained-earnings figure). If the prior year was unaudited, extend ISA 510 opening-balance procedures.');
+
+  // 23 — CLASSIFICATION INTEGRITY: a balance-sheet category with a material
+  // NEGATIVE natural balance almost always means a row was classified to the
+  // wrong side (found the hard way: a revenue line named "...building
+  // materials" landed in PPE as a RM9.65M negative asset, silently). This
+  // catches the whole class at runtime, whatever the account is called.
+  const NEG_OK = new Set(['SUSP','RE','CASH','OD','DIV']);   // legit two-sided / covered by their own checks
+  const negCats = [];
+  for (const c of CATS) {
+    if (c[2] !== 'bs' || NEG_OK.has(c[0])) continue;
+    if (m.nat[c[0]] < -mat.trivial) negCats.push(c);
+  }
+  if (m.revenue < -mat.trivial) negCats.push(['REV','Revenue','pl',-1]);
+  if (negCats.length) {
+    const detail = negCats.map(c => {
+      const rows = S.tb.filter(r => r.cat === c[0] && (num(r.dr) - num(r.cr)) * c[3] < 0).map(r => r.name).slice(0, 3);
+      return `${c[1]}: ${fmtRM(m.nat[c[0]] !== undefined ? m.nat[c[0]] : 0)}${rows.length ? ' (' + rows.join('; ') + ')' : ''}`;
+    }).join(' · ');
+    const worst = Math.max(...negCats.map(c => Math.abs(m.nat[c[0]] || 0)));
+    push('wrong-side', worst > mat.pm ? 'high' : 'medium', 'Books',
+      'Balance on the wrong side of the statements — likely misclassification',
+      'Presentation & classification assertions',
+      `These classifications produce a NEGATIVE balance where one is not normally possible — usually a row auto-classified into the wrong category: ${detail}. Left uncorrected, the FS, every ratio and the opinion recommendation are wrong.`,
+      'Open the Trial Balance screen and re-classify the listed rows to the correct category (the dropdown on each row). Assets, liabilities, income and expenses each have a natural side — a negative here is the classifier telling you it guessed wrong.');
+  }
+
+  // 24 — no revenue classified at all on a populated TB
+  if (S.tb.length >= 8 && m.revenue === 0 && t.cr > 0)
+    push('no-revenue','high','Books','No account is classified as revenue',
+      'Classification · ISA 315',
+      'The trial balance has credit balances but nothing classified as revenue — either the business genuinely has no turnover (rare) or the sales account was auto-classified elsewhere. Every margin, materiality benchmark and analytic depends on this.',
+      'Find the turnover line on the Trial Balance screen and set its classification to Revenue.');
 
   const sevRank = { blocker:0, high:1, medium:2, low:3, info:4 };
   F.sort((a,b) => sevRank[a.sev] - sevRank[b.sev]);
