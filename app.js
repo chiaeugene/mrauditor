@@ -153,8 +153,23 @@ const catOptions = sel =>
 /* keyword classifier — first match wins; director/related resolved by balance side */
 const RULES = [
   [/suspense|contra\b|unknown|rounding/i,'SUSP'],
-  [/rental income|interest (income|received)|gain on disposal|other income|commission received|management fee income|govern.*grant|subsid(y|i)/i,'OTHINC'],
-  [/interest (expense|paid|on)|finance (cost|charge)|loan interest|(hire purchase|hp|bank) interest|interest charge/i,'FIN'],
+  [/rental income|interest (income|received)|gain on disposal|other income|commission received|management fee income|dividend (income|received)|govern.*grant|subsid(y|i)/i,'OTHINC'],
+  [/interest (expense|paid|on)|finance (cost|charge)|loan interest|(hire purchase|hp|bank|overdraft) interest|interest charge/i,'FIN'],
+  // INCOME GUARD — a name that says revenue/sales/income is P&L income, full
+  // stop. Without this, trade descriptors hijack the row into an asset:
+  // "Sales - building materials" hit the PPE rule, "Service revenue -
+  // software development" hit intangibles (found by the 5-company stress run).
+  [/^(?!.*(payable|receivable|refund|deferred|accrued|suspense|tax))(?=.*\b(revenue|sales|income|takings|billings)\b)/i,'REV'],
+  // direct-cost guard: consumption/production/site labour is cost of sales,
+  // and "Purchases - trading stock" must not become inventory
+  [/(raw material|materials?)\s*(consumed|used)|consumption of|^purchases?\b|(site|factory|production) (wage|labour|labor|salar)/i,'COS'],
+  // liability deposits outrank the asset-deposit keyword below
+  [/deposits? (received|from (tenant|customer))|tenants?'? deposit/i,'OP'],
+  [/retention sum.*(receivable|due from)|retention (receivable|held by (employer|customer))/i,'TR'],
+  [/retention sum.*payable|retention (payable|due to)/i,'TP'],
+  // fees are expenses even when the name mentions buildings/software
+  // ("Building management fees" hit the PPE rule before this guard existed)
+  [/^(?!.*(income|subcon|payable|receivable))(?=.*\bfees?\b)/i,'ADMIN'],
   [/fixed deposit|\bfd\b/i,'FD'],
   [/overdraft|\bod\b/i,'OD'],
   [/accumulated dep|acc\.? dep|accum dep/i,'ACCDEP'],
@@ -162,6 +177,7 @@ const RULES = [
   [/hire purchase|h\/p|hp (payable|creditor|liab)/i,'HP'],
   [/term loan|bank loan|borrowing|loan payable|financing-i|financing i\b/i,'BORR'],
   [/deferred tax/i,'DEFTAX'],
+  [/(sst|service tax|sales tax|gst).{0,8}payable/i,'OP'],   // indirect tax ≠ income tax provision
   [/tax (payable|provision)|provision for tax|cp204 payable/i,'TAXPAY'],
   [/tax(ation)? (expense|charge)|income tax\b|^tax(ation)?\s*$/i,'TAXEXP'],
   [/share capital|paid[- ]?up|ordinary shares/i,'SC'],
@@ -179,7 +195,7 @@ const RULES = [
   [/motor vehicle|plant|machiner|equipment|furniture|fitting|renovation|computer(?!.*(expense|repair))|land|building|premises|signboard|air.?cond/i,'PPE'],
   [/inventor|stock(?! ?broker)|closing stock|finished goods|raw material|work.?in.?progress/i,'INV'],
   [/trade receivable|trade debtor|debtors?\b|account receivable/i,'TR'],
-  [/prepaym|deposit|sundry (receivable|debtor)|other receivable|staff advance|gst|sst (receivable|refund)/i,'OR'],
+  [/prepaym|deposit|sundry (receivable|debtor)|other receivable|receivables?\b|staff advance|gst|sst (receivable|refund)/i,'OR'],
   [/petty cash|cash (in hand|at bank|and bank)|bank balance|\bcash\b|maybank|cimb|public bank|rhb|hong leong|ambank|uob|ocbc|bank islam|affin|alliance/i,'CASH'],
   [/trade payable|trade creditor|creditors?\b|account payable/i,'TP'],
   [/accrual|accrued|other payable|sundry creditor|epf payable|socso payable|eis payable|pcb|salary payable|(sst|service tax|sales tax).{0,8}payable|deposit received/i,'OP'],
@@ -198,9 +214,12 @@ function classify(name, drAmt, crAmt) {
     }
   }
   // fallback: expenses if debit, payables if credit — flagged low-confidence by SUSP-adjacent styling.
-  // Safety net: an unmatched CREDIT balance whose name says income/revenue must
-  // never be guessed as a liability — that flips the whole P&L.
-  if (crAmt > drAmt && /income|revenue|sales|takings|billings/i.test(name)) return 'REV';
+  // Safety nets: an unmatched CREDIT whose name says income must never be
+  // guessed as a liability, and an unmatched DEBIT whose name says
+  // receivable/deposit/prepaid is an asset, not an expense — either mistake
+  // flips a balance across the financial statements.
+  if (crAmt > drAmt && /income|revenue|sales|takings|billings/i.test(name) && !/deferred|unearned|advance|received in advance/i.test(name)) return 'REV';
+  if (drAmt >= crAmt && /receivable|deposit|prepaid|prepayment|advance to/i.test(name)) return 'OR';
   return drAmt >= crAmt ? 'ADMIN' : 'OP';
 }
 
@@ -466,13 +485,17 @@ function buildFindings() {
       'For an initial engagement the auditor must obtain evidence that opening balances do not contain material misstatements — often via the predecessor’s working papers or substantive work on openings.',
       'If prior year was unaudited/exempt, extend procedures to opening stock, receivables and payables; scope limitation here commonly drives a qualified opinion on comparability.');
 
-  // 21 — profitable year but no tax charge booked
-  if (m.pbt > 1000 && m.nat.TAXEXP < 0.5) {
+  // 21 — taxable income but no tax charge booked. Gated on the COMPUTED tax,
+  // not book profit: a company can report a book loss (heavy depreciation)
+  // and still owe tax after add-backs — the original pbt>0 gate missed that
+  // case entirely (caught by the 5-company stress run).
+  if (m.nat.TAXEXP < 0.5 && S.tb.length) {
     const tc = taxComputeCore();
     if (tc.tax > mat.trivial)
-      push('no-tax','high','Taxation','Profitable year but no taxation charge in the accounts',
+      push('no-tax','high','Taxation', m.pbt > 0 ? 'Profitable year but no taxation charge in the accounts'
+          : 'Book loss, but TAXABLE income — no taxation charge in the accounts',
         'MPERS s.29 · ITA 1967',
-        `Profit before tax is ${fmtRM(m.pbt)} yet the TB carries no taxation charge — the FS would show profit after tax equal to PBT. Based on the tax computation (step 7: SME tiers, capital allowances ${fmtRM(tc.T('ca'))}, add-backs ${fmtRM(tc.addbacks)}), the charge should be ±${fmtRM(tc.tax)}. No reviewing partner signs a profitable FS with a nil tax line.`,
+        `${m.pbt > 0 ? `Profit before tax is ${fmtRM(m.pbt)}` : `The books show a loss of ${fmtRM(Math.abs(m.pbt))}, but after add-backs (depreciation ${fmtRM(tc.dep)} etc.) chargeable income is ${fmtRM(tc.ci)}`} yet the TB carries no taxation charge. Based on the tax computation (step 7: SME tiers, capital allowances ${fmtRM(tc.caUtil)}, add-backs ${fmtRM(tc.addbacks)}), the charge should be ±${fmtRM(tc.tax)}. No reviewing partner signs off a nil tax line against taxable income.`,
         'Agree the tax computation inputs on the Tax screen (capital allowances, disallowables), then post the provision. The one-click adjustment below books the charge from that same computation.',
         { desc:'Provide for current-year taxation per the tax computation',
           entries:[ {cat:'TAXEXP', label:'Taxation', amt: tc.tax},
