@@ -153,16 +153,16 @@ const catOptions = sel =>
 /* keyword classifier — first match wins; director/related resolved by balance side */
 const RULES = [
   [/suspense|contra\b|unknown|rounding/i,'SUSP'],
-  [/rental income|interest (income|received)|gain on disposal|other income|commission received|management fee income|dividend (income|received)|govern.*grant|subsid(y|i)/i,'OTHINC'],
-  [/interest (expense|paid|on)|finance (cost|charge)|loan interest|(hire purchase|hp|bank|overdraft) interest|interest charge/i,'FIN'],
+  [/rental income|interest (income|received)|gain on disposal|other income|commission received|management fee income|dividend (income|received)|(forex|foreign exchange|exchange) gain|govern.*grant|subsid(y|i)/i,'OTHINC'],
+  [/interest (expense|paid|on)|finance (cost|charge)|loan interest|(hire purchase|hp|bank|overdraft) interest|interest charge|financing interest|(\bba\b|bankers'? acceptance|trust receipt|floor ?stock).{0,12}(interest|discount)/i,'FIN'],
   // INCOME GUARD — a name that says revenue/sales/income is P&L income, full
   // stop. Without this, trade descriptors hijack the row into an asset:
   // "Sales - building materials" hit the PPE rule, "Service revenue -
   // software development" hit intangibles (found by the 5-company stress run).
-  [/^(?!.*(payable|receivable|refund|deferred|accrued|suspense|tax))(?=.*\b(revenue|sales|income|takings|billings)\b)/i,'REV'],
+  [/^(?!.*(payable|receivable|refund|deferred|unearned|accrued|suspense|tax))(?=.*\b(revenue|sales|income|takings|billings)\b)/i,'REV'],
   // direct-cost guard: consumption/production/site labour is cost of sales,
   // and "Purchases - trading stock" must not become inventory
-  [/(raw material|materials?)\s*(consumed|used)|consumption of|^purchases?\b|(site|factory|production) (wage|labour|labor|salar)/i,'COS'],
+  [/(raw material|materials?)\s*(consumed|used)|consumption of|^purchases?\b|cash purchases?\b|(site|factory|production) (wage|labour|labor|salar)/i,'COS'],
   // liability deposits outrank the asset-deposit keyword below
   [/deposits? (received|from (tenant|customer))|tenants?'? deposit/i,'OP'],
   [/retention sum.*(receivable|due from)|retention (receivable|held by (employer|customer))/i,'TR'],
@@ -175,7 +175,7 @@ const RULES = [
   [/accumulated dep|acc\.? dep|accum dep/i,'ACCDEP'],
   [/depreciation|amortisation|amortization/i,'DEPR'],
   [/hire purchase|h\/p|hp (payable|creditor|liab)/i,'HP'],
-  [/term loan|bank loan|borrowing|loan payable|financing-i|financing i\b/i,'BORR'],
+  [/term loan|bank loan|borrowing|loan payable|financing-i|financing i\b|bankers'? acceptance|trust receipt|floor ?(stock|plan) financing|revolving credit|invoice financing/i,'BORR'],
   [/deferred tax/i,'DEFTAX'],
   [/(sst|service tax|sales tax|gst).{0,8}payable/i,'OP'],   // indirect tax ≠ income tax provision
   [/tax (payable|provision)|provision for tax|cp204 payable/i,'TAXPAY'],
@@ -192,12 +192,17 @@ const RULES = [
   [/^(?!.*(inventor|stock))(?=.*(driver|tyre|tayar))/i,'COS'],  // vehicle-direct costs — but never a stock/inventory line
   [/upkeep|repair|maintenance|road tax|petrol|diesel|toll|parking/i,'ADMIN'],
   [/rent(al)? (of|expense|paid)|^rent\b|office rent|rent — |quit rent|assessment/i,'ADMIN'],
-  [/motor vehicle|plant|machiner|equipment|furniture|fitting|renovation|computer(?!.*(expense|repair))|land|building|premises|signboard|air.?cond/i,'PPE'],
+  // "... - cost" / "(cost)" endings are a fixed-asset register convention —
+  // stronger signal than any expense keyword ("Office, warehouse racking &
+  // forklifts - cost" was expensed via the 'office' keyword before this)
+  [/(-|—)\s*cost\s*$|\(cost\)\s*$|at cost\s*$/i,'PPE'],
+  [/motor vehicle|\bplants?\b|machiner|equipment|furniture|fitting|renovation|forklift|racking|computer(?!.*(expense|repair))|land|building|premises|signboard|air.?cond/i,'PPE'],
   [/inventor|stock(?! ?broker)|closing stock|finished goods|raw material|work.?in.?progress/i,'INV'],
   [/trade receivable|trade debtor|debtors?\b|account receivable/i,'TR'],
-  [/prepaym|deposit|sundry (receivable|debtor)|other receivable|receivables?\b|staff advance|gst|sst (receivable|refund)/i,'OR'],
-  [/petty cash|cash (in hand|at bank|and bank)|bank balance|\bcash\b|maybank|cimb|public bank|rhb|hong leong|ambank|uob|ocbc|bank islam|affin|alliance/i,'CASH'],
-  [/trade payable|trade creditor|creditors?\b|account payable/i,'TP'],
+  [/prepaym|deposit|sundry (receivable|debtor)|other receivable|receivables?\b|recoverable|staff advance|gst|sst (receivable|refund)/i,'OR'],
+  // bare 'cash' guarded: "Cash purchases"/"Cash sales" are P&L lines, not bank
+  [/petty cash|cash (in hand|at bank|and bank)|bank balance|\bcash\b(?!.{0,3}(purchase|sale|donation|payment))|\b(current|proceeds|usd|foreign currency) account\b|maybank|cimb|public bank|rhb|hong leong|ambank|uob|ocbc|bank islam|affin|alliance/i,'CASH'],
+  [/trade payable|trade creditor|creditors?\b|accounts? payable/i,'TP'],
   [/accrual|accrued|other payable|sundry creditor|epf payable|socso payable|eis payable|pcb|salary payable|(sst|service tax|sales tax).{0,8}payable|deposit received/i,'OP'],
   [/^sales\b|sales revenue|^revenue|turnover|jualan|service (income|revenue|fee)|contract revenue|project income|(transport|haulage|freight|forwarding|trucking|logistic|courier|charter|delivery|rental of (lorr|truck|vehicle))[^,]{0,30}(income|revenue)|(income|revenue) from (transport|haulage|freight|deliver)/i,'REV'],
   [/purchase|cost of (sale|good)|direct (labour|labor|wage|cost)|subcontract|carriage inward|freight inward|opening stock|production/i,'COS'],
@@ -219,7 +224,7 @@ function classify(name, drAmt, crAmt) {
   // receivable/deposit/prepaid is an asset, not an expense — either mistake
   // flips a balance across the financial statements.
   if (crAmt > drAmt && /income|revenue|sales|takings|billings/i.test(name) && !/deferred|unearned|advance|received in advance/i.test(name)) return 'REV';
-  if (drAmt >= crAmt && /receivable|deposit|prepaid|prepayment|advance to/i.test(name)) return 'OR';
+  if (drAmt >= crAmt && /receivable|recoverable|deposit|prepaid|prepayment|advance to/i.test(name)) return 'OR';
   return drAmt >= crAmt ? 'ADMIN' : 'OP';
 }
 
@@ -248,6 +253,25 @@ const CLASSIFY_TESTS = [
   ['Kitchen equipment & renovation - cost',100,0,'PPE'],
   ['Inventories - trading stock',100,0,'INV'],['Inventories - spares & tyres',100,0,'INV'],
   ['Work-in-progress - contracts',100,0,'INV'],['Amount owing by director',100,0,'DIRADV'],
+  ['Unrealised forex gain',0,100,'OTHINC'],['Unrealised forex loss',100,0,'ADMIN'],
+  ['Bankers acceptance - Maybank',0,100,'BORR'],['Trust receipts - CIMB',0,100,'BORR'],
+  ['Floor stock financing - Public Bank',0,100,'BORR'],
+  ['Duty & disbursements recoverable - customers',100,0,'OR'],
+  ['Unearned gift card revenue',0,100,'OP'],
+  ['Deposits from customers - vehicle bookings',0,100,'OP'],
+  ['Replanting expenditure',100,0,'ADMIN'],
+  ['Bearer plants - oil palm (cost)',100,0,'PPE'],
+  ['Floor stock financing interest',100,0,'FIN'],
+  ['BA & trade financing interest',100,0,'FIN'],
+  ['Office, warehouse racking & forklifts - cost',100,0,'PPE'],
+  ['Bank charges & LC costs',100,0,'ADMIN'],
+  ['Warranty & PDI costs',100,0,'ADMIN'],
+  ['Staff costs',100,0,'ADMIN'],
+  ['Cash purchases - scrap suppliers (walk-in)',100,0,'COS'],
+  ['Cash sales',0,100,'REV'],
+  ['USD export proceeds account (translated)',100,0,'CASH'],
+  ['Petty cash & yard float',100,0,'CASH'],
+  ['Accounts payable',0,100,'TP'],
 ];
 function runClassifierSelfTest() {
   const fails = [];
@@ -555,24 +579,28 @@ function buildFindings() {
   // wrong side (found the hard way: a revenue line named "...building
   // materials" landed in PPE as a RM9.65M negative asset, silently). This
   // catches the whole class at runtime, whatever the account is called.
+  // Checked at ROW level, not category level: a single wrong-side row hiding
+  // inside an otherwise-healthy category (e.g. RM388k of floor-plan INTEREST
+  // classified into the RM6.5M floor-plan LIABILITY) never shows in the
+  // aggregate — the round-2 stress run proved the category-level check blind
+  // to exactly that. Every catastrophic misclassification found in testing
+  // is a row whose balance side contradicts its category's natural side.
   const NEG_OK = new Set(['SUSP','RE','CASH','OD','DIV']);   // legit two-sided / covered by their own checks
-  const negCats = [];
-  for (const c of CATS) {
-    if (c[2] !== 'bs' || NEG_OK.has(c[0])) continue;
-    if (m.nat[c[0]] < -mat.trivial) negCats.push(c);
+  const wrongRows = [];
+  for (const r of S.tb) {
+    const c = CAT[r.cat];
+    if (NEG_OK.has(r.cat)) continue;
+    const natRow = (num(r.dr) - num(r.cr)) * c.side;
+    if (natRow < -mat.trivial) wrongRows.push({ name: r.name, cat: r.cat, label: c.label, v: natRow });
   }
-  if (m.revenue < -mat.trivial) negCats.push(['REV','Revenue','pl',-1]);
-  if (negCats.length) {
-    const detail = negCats.map(c => {
-      const rows = S.tb.filter(r => r.cat === c[0] && (num(r.dr) - num(r.cr)) * c[3] < 0).map(r => r.name).slice(0, 3);
-      return `${c[1]}: ${fmtRM(m.nat[c[0]] !== undefined ? m.nat[c[0]] : 0)}${rows.length ? ' (' + rows.join('; ') + ')' : ''}`;
-    }).join(' · ');
-    const worst = Math.max(...negCats.map(c => Math.abs(m.nat[c[0]] || 0)));
+  if (wrongRows.length) {
+    const worst = Math.max(...wrongRows.map(x => Math.abs(x.v)));
+    const detail = wrongRows.slice(0, 6).map(x => `"${x.name}" sits in ${x.label} with a ${fmtRM(x.v)} balance`).join(' · ');
     push('wrong-side', worst > mat.pm ? 'high' : 'medium', 'Books',
-      'Balance on the wrong side of the statements — likely misclassification',
+      `${wrongRows.length} account(s) on the wrong side of the statements — likely misclassification`,
       'Presentation & classification assertions',
-      `These classifications produce a NEGATIVE balance where one is not normally possible — usually a row auto-classified into the wrong category: ${detail}. Left uncorrected, the FS, every ratio and the opinion recommendation are wrong.`,
-      'Open the Trial Balance screen and re-classify the listed rows to the correct category (the dropdown on each row). Assets, liabilities, income and expenses each have a natural side — a negative here is the classifier telling you it guessed wrong.');
+      `Each of these rows carries a balance OPPOSITE to its category's natural side — almost always a row auto-classified into the wrong category: ${detail}. Left uncorrected, the FS, every ratio and the opinion recommendation are wrong.`,
+      'Open the Trial Balance screen and re-classify the listed rows (the dropdown on each row). An income line in an asset category, or an expense inside a liability, always shows up here — this check is the classifier auditing itself.');
   }
 
   // 24 — no revenue classified at all on a populated TB
@@ -916,6 +944,12 @@ function clearTb(){ if (guardArchived()) return;
 /* Shared TB import core: takes an array of cell-arrays [name, n1, n2, n3] */
 function importRows(rowArrays) {
   if (guardArchived()) return 0;
+  // Unquoted commas inside account names shift CSV columns silently
+  // ("Office, warehouse racking & forklifts" imported RM1.84M onto the wrong
+  //  side in testing). Detect the signature — rows with extra columns — and
+  // tell the auditor exactly what to do about it.
+  const wide = rowArrays.filter(p => p.length > 4 && p.slice(4).some(x => num(x) !== 0 || String(x).trim() !== ''));
+  if (wide.length) toast(`⚠ ${wide.length} line(s) have more than 4 columns — likely commas inside account names. Copy-paste from Excel (tab-separated) instead, or quote the names. Example: "${String(wide[0][0]).slice(0,40)}…"`);
   let added = 0, skipped = 0;
   for (const parts of rowArrays) {
     if (!parts || parts.length < 2) { skipped++; continue; }
@@ -1462,24 +1496,36 @@ const TAX_SCAN_RULES = [
   [/zakat/i, 'zakat', 'Zakat — deduct via s.44(11A) (2.5% cap input), not as an expense'],
   [/secretarial|tax filing fee|tax agent fee/i, 'cap15', 'Secretarial + tax filing fees — combined deduction capped at RM15,000/YA'],
 ];
+const TAX_SCAN_INCOME_RULES = [
+  [/(forex|foreign exchange|exchange) gain/i, 'Unrealised/translation forex gain — not taxable until realised: deduct as non-taxable income'],
+  [/gain on disposal/i, 'Gain on disposal — capital in nature (the clawback happens via the CA statement balancing charge): deduct as non-taxable'],
+  [/dividend (income|received)/i, 'Single-tier dividend income — tax exempt: deduct'],
+];
 function taxScanHTML() {
   const hits = [];
   for (const r of S.tb) {
-    if (CAT[r.cat].kind !== 'pl' || CAT[r.cat].side !== 1) continue;   // expenses only
-    const amt = num(r.dr) - num(r.cr);
-    if (amt <= 0) continue;
-    for (const [re, kind, note] of TAX_SCAN_RULES) if (re.test(r.name)) { hits.push({ name: r.name, amt, kind, note }); break; }
+    if (CAT[r.cat].kind !== 'pl') continue;
+    if (CAT[r.cat].side === 1) {                                        // expense rows
+      const amt = num(r.dr) - num(r.cr);
+      if (amt <= 0) continue;
+      for (const [re, kind, note] of TAX_SCAN_RULES) if (re.test(r.name)) { hits.push({ name: r.name, amt, kind, note }); break; }
+    } else {                                                            // income rows — exempt-income patterns
+      const amt = num(r.cr) - num(r.dr);
+      if (amt <= 0) continue;
+      for (const [re, note] of TAX_SCAN_INCOME_RULES) if (re.test(r.name)) { hits.push({ name: r.name, amt, kind: 'exempt', note }); break; }
+    }
   }
   const hasMotorAndDirectors = S.tb.some(r => r.cat === 'PPE' && /motor|vehicle|truck|lorr|car\b/i.test(r.name)) && S.directors.length > 0;
-  const sug = { entertain: 0, fines: 0, donations: 0, otherAdd: 0 };
+  const sug = { entertain: 0, fines: 0, donations: 0, otherAdd: 0, exempt: 0 };
   for (const h of hits) {
     if (h.kind === 'half') sug.entertain += Math.round(h.amt * 0.5);
     else if (h.kind === 'fines') sug.fines += h.amt;
     else if (h.kind === 'don') sug.donations += h.amt;
     else if (h.kind === 'add') sug.otherAdd += h.amt;
     else if (h.kind === 'cap15') sug.otherAdd += Math.max(h.amt - 15000, 0);
+    else if (h.kind === 'exempt') sug.exempt += h.amt;
   }
-  const anySug = sug.entertain + sug.fines + sug.donations + sug.otherAdd > 0;
+  const anySug = sug.entertain + sug.fines + sug.donations + sug.otherAdd + sug.exempt > 0;
   return `
   <div class="p-3 rounded-xl border border-line">
     <div class="font-semibold text-[13.5px] mb-1">s.39 deductibility scanner — read from the trial balance</div>
@@ -1488,14 +1534,14 @@ function taxScanHTML() {
       <td class="num mono align-top" style="width:100px">${h.kind === 'half' ? fmt(Math.round(h.amt * 0.5)) : h.kind === 'zakat' ? '—' : h.kind === 'cap15' ? fmt(Math.max(h.amt - 15000, 0)) : fmt(h.amt)}</td></tr>`).join('')}</table>` :
       '<p class="text-[12px] text-mut">No non-deductibility patterns detected on the expense rows — review the detailed ledgers for items hidden in general accounts.</p>'}
     ${hasMotorAndDirectors ? '<p class="text-[11px] text-warn mt-1.5">Motor vehicles + directors on file — check benefits-in-kind on the directors’ EA forms (prescribed value method) and private-use fuel.</p>' : ''}
-    ${anySug ? `<button class="btn btn-pri !py-1.5 !text-[12px] mt-2 no-print" onclick="taxScanApply(${sug.entertain},${sug.fines},${sug.donations},${sug.otherAdd})">
+    ${anySug ? `<button class="btn btn-pri !py-1.5 !text-[12px] mt-2 no-print" onclick="taxScanApply(${sug.entertain},${sug.fines},${sug.donations},${sug.otherAdd},${sug.exempt})">
       Apply scanner results to the computation</button>
-      <p class="text-[11px] text-mut mt-1.5">Fills entertainment ${fmtRM(sug.entertain)}, fines ${fmtRM(sug.fines)}, donations ${fmtRM(sug.donations)} (move to the approved-donations input if receipts from approved institutions exist), other add-backs ${fmtRM(sug.otherAdd)}.</p>` : ''}
+      <p class="text-[11px] text-mut mt-1.5">Fills entertainment ${fmtRM(sug.entertain)}, fines ${fmtRM(sug.fines)}, donations ${fmtRM(sug.donations)} (move to the approved-donations input if receipts from approved institutions exist), other add-backs ${fmtRM(sug.otherAdd)}${sug.exempt ? `, non-taxable income ${fmtRM(sug.exempt)}` : ''}.</p>` : ''}
   </div>`;
 }
-function taxScanApply(ent, fines, don, other) {
+function taxScanApply(ent, fines, don, other, exempt) {
   if (guardArchived()) return;
-  Object.assign(S.tax, { entertain: String(ent), fines: String(fines), donations: String(don), otherAdd: String(other), _touched: true });
+  Object.assign(S.tax, { entertain: String(ent), fines: String(fines), donations: String(don), otherAdd: String(other), exemptInc: String(exempt || 0), _touched: true });
   saveState(); renderTax();
   toast('Scanner results applied to the computation');
 }
