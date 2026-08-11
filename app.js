@@ -423,6 +423,15 @@ function materiality() {
   return { overall, pm, trivial: Math.round(overall * .05), label: b.label, key, autoSwitched, benches, m };
 }
 
+/* Vocabulary for the semantic-mismatch check (finding 23a). Kept deliberately
+   narrow: these are words that describe a cost CONSUMED in the period, so
+   seeing one on a balance-sheet row is a genuine question, not noise.
+   BS_LEGIT_WORDS are the words that make such a name legitimate on the
+   balance sheet after all ("rental DEPOSIT", "royalty PAYABLE"). */
+const PL_NAME_WORDS = /\b(expenditure|expenses?|fees?|charges?|wages?|salar(y|ies)|allowances?|rental|insurance|repairs?|maintenance|upkeep|utilities|subscriptions?|licen[cs]es?|printing|stationery|postage|courier|travelling|entertainment|commissions?|royalt(y|ies)|lev(y|ies)|cess|donations?|advertising|marketing|promotions?|training|bonus|freight|carriage|written off)\b/i;
+const BS_LEGIT_WORDS = /prepaid|prepayment|deposit|accrued|accrual|payable|receivable|provision|owing|advance|retention|unearned|deferred|reserve|accumulated|refundable|recoverable|in advance/i;
+const FAR_NAMING = /(-|—)\s*cost\s*$|\(cost\)\s*$|at cost\s*$|\bregister\b/i;
+
 /* ---------------- findings engine ---------------- */
 function buildFindings() {
   const F = [];
@@ -684,6 +693,30 @@ function buildFindings() {
       `Each of these rows carries a balance OPPOSITE to its category's natural side — almost always a row auto-classified into the wrong category: ${detail}. Left uncorrected, the FS, every ratio and the opinion recommendation are wrong.`,
       'Open the Trial Balance screen and re-classify the listed rows (the dropdown on each row). An income line in an asset category, or an expense inside a liability, always shows up here — this check is the classifier auditing itself.');
   }
+
+  // 23a — SEMANTIC MISMATCH: the row's own name contradicts the nature of the
+  // category it landed in. This is the one misclassification class that is
+  // arithmetically invisible — an expense parked in an asset (or an asset
+  // expensed) shifts both sides equally, so the balance sheet still ties and
+  // the wrong-side check sees nothing. The name is the only remaining signal:
+  // "Replanting EXPENDITURE" sitting in PPE, or "...forklifts - COST" sitting
+  // in admin expenses. Both were real misses before this existed.
+  const mismatches = [];
+  for (const r of S.tb) {
+    const c = CAT[r.cat];
+    const amt = Math.abs((num(r.dr) - num(r.cr)) * c.side);
+    if (amt <= mat.trivial) continue;
+    if (c.kind === 'bs' && PL_NAME_WORDS.test(r.name) && !BS_LEGIT_WORDS.test(r.name) && !FAR_NAMING.test(r.name))
+      mismatches.push({ name: r.name, amt, why: `reads like an expense but is classified under ${c.label}` });
+    else if (c.kind === 'pl' && c.side === 1 && FAR_NAMING.test(r.name))
+      mismatches.push({ name: r.name, amt, why: `is named like a fixed-asset register line but is classified under ${c.label} (expensed)` });
+  }
+  if (mismatches.length)
+    push('class-semantic', mismatches.some(x => x.amt > mat.pm) ? 'high' : 'medium', 'Books',
+      `${mismatches.length} account name(s) contradict the category they are classified in`,
+      'Classification · capital vs revenue (s.33/s.39 ITA, MPERS s.17)',
+      `${mismatches.map(x => `"${esc(x.name)}" (${fmtRM(x.amt)}) ${x.why}`).join(' · ')}. This kind of error does NOT unbalance the trial balance — capitalising an expense or expensing an asset moves both sides equally — so it will not surface anywhere else. It changes profit, the asset base, capital allowances and the tax charge.`,
+      'Open the Trial Balance screen and confirm each row against the underlying document: is it a cost consumed in the year (expense) or an asset with future benefit (capitalise)? Where it is capital, it belongs in the fixed asset register and the Capital Allowance Statement, not in the profit or loss.');
 
   // 23b — the selected materiality benchmark produced nothing usable
   if (mat.autoSwitched)
@@ -1026,6 +1059,59 @@ function tbEdit(i, k, v) {
     r.autoWeak = !RULES.some(([re]) => re.test(r.name)); }
   if (k === 'cat') S.tb[i].autoWeak = false;
   renderTB(); saveState();
+}
+/* AI second opinion on the whole classification column. The keyword rules and
+   the semantic-mismatch check both work on the account NAME; this reads the
+   names against what the company actually does, which is the only way to
+   judge whether a cost is capital or revenue for THIS business (a
+   "renovation" is an asset for a restaurant and a repair for a landlord).
+   It proposes — the auditor applies, one row at a time. */
+async function tbAiReview() {
+  if (!S.tb.length) { toast('Import a trial balance first'); return; }
+  const box = $('tb-airev'); if (!box) return;
+  box.innerHTML = `<div class="p-2.5 rounded-xl border border-indigo/30 text-[12.5px] flex items-center gap-2">
+    <span class="pill pill-info">Mr Auditor AI</span><span class="text-mut">reading ${S.tb.length} account names against the business…</span></div>`;
+  try {
+    const list = S.tb.map((r, i) => `${i}|${r.name}|${CAT[r.cat].label}|${fmt((num(r.dr)-num(r.cr))*CAT[r.cat].side)}`).join('\n');
+    const cats = CATS.map(c => `${c[0]}=${c[1]}`).join('; ');
+    const answer = await aiRequest(
+`Company: ${S.setup.name} — ${S.setup.activity}. ${S.intake.risknotes ? 'Notes: ' + S.intake.risknotes : ''}
+Below is the classified trial balance as "index|account name|current category|amount".
+Review ONLY for wrong classification. Pay particular attention to capital-vs-revenue (a cost wrongly capitalised or an asset wrongly expensed does NOT unbalance anything, so nothing else will catch it) and to anything that contradicts this company's actual business.
+Valid category codes: ${cats}
+Return ONLY a JSON array of the rows you believe are wrong, no commentary:
+[{"i":0,"suggest":"CODE","why":"one short sentence"}]
+Return [] if every classification looks right.
+${list}`);
+    const mJson = answer.match(/\[[\s\S]*\]/);
+    if (!mJson) throw new Error('no parseable review returned');
+    const sug = JSON.parse(mJson[0]).filter(s => S.tb[s.i] && CAT[s.suggest] && S.tb[s.i].cat !== s.suggest);
+    logActivity('AI reviewed TB classifications', `${sug.length} suggestion(s) over ${S.tb.length} accounts`);
+    if (!sug.length) {
+      box.innerHTML = `<div class="p-2.5 rounded-xl bg-okbg text-ok text-[12.5px] font-medium">AI reviewed all ${S.tb.length} classifications against ${esc(S.setup.activity) || 'the business'} — none look wrong. Noted on the file.</div>`;
+      return;
+    }
+    box.innerHTML = `<div class="p-2.5 rounded-xl border border-warn/40 bg-warnbg/40">
+      <div class="font-semibold text-[13px] mb-1.5">AI questions ${sug.length} classification(s) — you decide</div>
+      ${sug.map(s => `<div class="flex items-start gap-2 py-1 border-b border-line/60 last:border-0 text-[12.5px]">
+        <div class="min-w-0 flex-1"><span class="font-medium">${esc(S.tb[s.i].name)}</span>
+          <span class="text-mut"> — ${CAT[S.tb[s.i].cat].label} → <span class="text-indigo font-medium">${CAT[s.suggest].label}</span></span>
+          <div class="text-[11.5px] text-mut">${esc(s.why || '')}</div></div>
+        <button class="btn btn-ghost !py-1 !px-2 !text-[11.5px] flex-none" onclick="tbApplySuggestion(${s.i},'${s.suggest}')">Apply</button>
+      </div>`).join('')}
+      <p class="text-[11px] text-mut mt-1.5">Suggestions only — the AI cannot see the invoices. Confirm against the document before applying.</p></div>`;
+  } catch (e) {
+    box.innerHTML = `<div class="p-2.5 rounded-xl border border-line text-[12.5px] text-mut">Could not review: ${esc(e.message || 'unknown error')}</div>`;
+  }
+}
+function tbApplySuggestion(i, cat) {
+  if (guardArchived()) return;
+  const r = S.tb[i]; if (!r || !CAT[cat]) return;
+  const was = CAT[r.cat].label;
+  r.cat = cat; r.autoWeak = false;
+  logActivity('Reclassified account (AI review)', `${r.name}: ${was} → ${CAT[cat].label}`);
+  saveState(); renderTB(); updateTop();
+  toast(`${r.name} → ${CAT[cat].label}`);
 }
 function addTbRow(){ if (guardArchived()) return; S.tb.push({id:nid(), name:'', cat:'ADMIN', dr:'', cr:'', py:'', autoWeak:false}); renderTB(); }
 function clearTb(){ if (guardArchived()) return;
