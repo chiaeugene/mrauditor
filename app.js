@@ -21,7 +21,8 @@ let _vaultN = 0;   // cached vault file count for the active engagement (refresh
 /* ---------------- state ---------------- */
 const BLANK = () => ({
   setup: { name:'', regno:'', incdate:'', fye:'', activity:'', framework:'MPERS',
-           capital:'', employees:'', firstaudit:'no', foreign:'no', address:'', secretary:'', secno:'' },
+           capital:'', employees:'', firstaudit:'no', foreign:'no', address:'', secretary:'', secno:'',
+           relatedco:'', holdingco:'', holdingcoType:'' },
   directors: [],
   tb: [],                 // {id, name, cat, dr, cr, py}
   adjustments: [],        // {id, findingId, desc, entries:[{cat,label,amt}]}  amt: +dr / -cr
@@ -66,7 +67,26 @@ function activeClient(){ return DB.clients.find(c => c.id === DB.activeId); }
 /* ---------------- utils ---------------- */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const num = v => { const n = parseFloat(String(v ?? '').replace(/[,\s]/g,'')); return isFinite(n) ? n : 0; };
+/* Amount parser for real accounting-software exports. Before this handled the
+   variants below, a trial balance exported from UBS or AutoCount in the
+   accounting format — (1,234.56) for credits — imported as ZEROS, silently,
+   and an SQL Account export with a trailing "CR" imported with the sign
+   flipped. Both are the default output of software Malaysian SMEs actually
+   use, so every variant is parsed and covered by the boot self-test. */
+const num = v => {
+  if (typeof v === 'number') return isFinite(v) ? v : 0;
+  let s = String(v ?? '').trim();
+  if (!s) return 0;
+  let neg = false;
+  if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1); }        // (1,234.56) accounting negative
+  if (/cr\.?$/i.test(s)) { neg = true; s = s.replace(/\s*cr\.?$/i, ''); }   // 1,234.56 CR
+  else s = s.replace(/\s*dr\.?$/i, '');                                     // 1,234.56 DR
+  if (/-\s*$/.test(s)) { neg = true; s = s.replace(/-\s*$/, ''); }    // trailing minus (older ERPs)
+  s = s.replace(/^(rm|myr)\s*/i, '').replace(/[,\s]/g, '');          // RM prefix, thousands separators
+  const n = parseFloat(s);
+  if (!isFinite(n)) return 0;
+  return neg ? -Math.abs(n) : n;
+};
 const fmt = (n, dash) => {
   if (n === null || n === undefined || (dash && Math.abs(n) < 0.005)) return '–';
   const r = Math.round(n);
@@ -150,9 +170,33 @@ const CAT = Object.fromEntries(CATS.map(c => [c[0], {code:c[0], label:c[1], kind
 const catOptions = sel =>
   CATS.map(c => `<option value="${c[0]}" ${sel===c[0]?'selected':''}>${c[1]}</option>`).join('');
 
-/* keyword classifier — first match wins; director/related resolved by balance side */
+/* keyword classifier — first match wins; director/related resolved by balance side.
+   Bilingual: plenty of Malaysian SME ledgers are kept wholly in Malay, so the
+   Bahasa terms sit alongside the English ones rather than in a separate pass. */
 const RULES = [
-  [/suspense|contra\b|unknown|rounding/i,'SUSP'],
+  [/suspense|contra\b|unknown|rounding|akaun sementara/i,'SUSP'],
+  // --- Bahasa Malaysia block: placed early so compound names resolve before
+  //     an English keyword inside the same string can hijack them ---
+  [/untung terkumpul|kerugian terkumpul|untung tertahan/i,'RE'],
+  [/modal saham|modal berbayar/i,'SC'],
+  [/penghutang|akaun belum terima|pelanggan berhutang/i,'TR'],
+  [/pemiutang|akaun belum bayar/i,'TP'],
+  [/\bstok\b|inventori/i,'INV'],
+  [/tunai (di|dalam)? ?bank|wang tunai|baki bank|tunai runcit/i,'CASH'],
+  [/susut ?nilai terkumpul/i,'ACCDEP'],
+  [/susut ?nilai|pelunasan/i,'DEPR'],
+  [/^belian|belian barang|kos jualan|kos barang dijual/i,'COS'],
+  // expenses before assets: "Sewa premis" is rent, not the premises
+  // Malay terms are word-bounded where an English word contains them:
+  // "premis" ⊂ "premises", "air" ⊂ "air-cond" — both would silently
+  // reclassify English accounts (found by the parentheses import test).
+  [/sewa|gaji|upah|elaun|utiliti|elektrik|bil air|insurans|yuran|perbelanjaan|alat tulis|pengangkutan|penyelenggaraan|baik ?pulih|derma|denda/i,'ADMIN'],
+  [/kenderaan|jentera|perabot|kelengkapan|loji|bangunan|hartanah|\bpremis\b/i,'PPE'],
+  // "overdraf" is Malay; the negative lookahead stops it eating English
+  // "overdraft interest", which belongs in finance costs
+  [/pinjaman berjangka|pinjaman bank|overdraf(?!t)/i,'BORR'],
+  [/faedah (atas|pinjaman|bank)|kos kewangan/i,'FIN'],
+  [/cukai (perlu dibayar|tertunggak)|peruntukan cukai/i,'TAXPAY'],
   [/rental income|interest (income|received)|gain on disposal|other income|commission received|management fee income|dividend (income|received)|(forex|foreign exchange|exchange) gain|govern.*grant|subsid(y|i)/i,'OTHINC'],
   [/interest (expense|paid|on)|finance (cost|charge)|loan interest|(hire purchase|hp|bank|overdraft) interest|interest charge|financing interest|(\bba\b|bankers'? acceptance|trust receipt|floor ?stock).{0,12}(interest|discount)/i,'FIN'],
   // INCOME GUARD — a name that says revenue/sales/income is P&L income, full
@@ -269,9 +313,30 @@ const CLASSIFY_TESTS = [
   ['Staff costs',100,0,'ADMIN'],
   ['Cash purchases - scrap suppliers (walk-in)',100,0,'COS'],
   ['Cash sales',0,100,'REV'],
+  // Bahasa Malaysia — many SME ledgers are kept wholly in Malay
+  ['Jualan',0,100,'REV'],['Belian',100,0,'COS'],['Belian barang niaga',100,0,'COS'],
+  ['Untung terkumpul',0,100,'RE'],['Modal saham',0,100,'SC'],
+  ['Penghutang perdagangan',100,0,'TR'],['Pemiutang perdagangan',0,100,'TP'],
+  ['Stok akhir',100,0,'INV'],['Tunai di bank',100,0,'CASH'],
+  ['Susut nilai',100,0,'DEPR'],['Susut nilai terkumpul',0,100,'ACCDEP'],
+  ['Kenderaan bermotor',100,0,'PPE'],['Sewa premis',100,0,'ADMIN'],
+  ['Gaji dan upah',100,0,'ADMIN'],['Faedah atas pinjaman',100,0,'FIN'],
+  // English accounts the Malay vocabulary must never capture
+  ['Rental of premises',100,0,'ADMIN'],['Air-conditioning system - cost',100,0,'PPE'],
+  ['Bank overdraft interest',100,0,'FIN'],['Utilities',100,0,'ADMIN'],
   ['USD export proceeds account (translated)',100,0,'CASH'],
   ['Petty cash & yard float',100,0,'CASH'],
   ['Accounts payable',0,100,'TP'],
+];
+/* Amount-parsing cases: every export format that has ever been mis-parsed.
+   A regression here corrupts every figure in a client's file, so it runs
+   at boot alongside the classifier battery. */
+const NUM_TESTS = [
+  ['1,234.56', 1234.56], ['(1,234.56)', -1234.56], ['1,234.56 CR', -1234.56],
+  ['1,234.56CR', -1234.56], ['1,234.56 DR', 1234.56], ['RM1,234.56', 1234.56],
+  ['RM 1,234.56', 1234.56], ['1,234.56-', -1234.56], ['-1,234.56', -1234.56],
+  ['1 234.56', 1234.56], ['', 0], ['-', 0], ['0.00', 0], ['1,234', 1234],
+  ['(1,234)', -1234], ['12', 12], [1234.5, 1234.5], [null, 0], [undefined, 0],
 ];
 function runClassifierSelfTest() {
   const fails = [];
@@ -279,7 +344,11 @@ function runClassifierSelfTest() {
     const got = classify(n, dr, cr);
     if (got !== want) fails.push(`"${n}": got ${got}, expected ${want}`);
   }
-  if (fails.length) console.error(`CLASSIFIER SELF-TEST FAILING (${fails.length}/${CLASSIFY_TESTS.length}):\n` + fails.join('\n'));
+  for (const [input, want] of NUM_TESTS) {
+    const got = num(input);
+    if (Math.abs(got - want) > 0.005) fails.push(`num(${JSON.stringify(input)}): got ${got}, expected ${want}`);
+  }
+  if (fails.length) console.error(`SELF-TEST FAILING (${fails.length} case(s)):\n` + fails.join('\n'));
   return fails;
 }
 const _classifierFails = runClassifierSelfTest();
@@ -335,10 +404,23 @@ function materiality() {
     pbt: { label:'5% of profit before tax', base:Math.abs(m.pbt), rate:.05 },
     assets: { label:'1.5% of total assets', base:Math.abs(m.totalAssets), rate:.015 }
   };
-  const b = benches[S.audit.benchmark] || benches.revenue;
+  let key = S.audit.benchmark || 'revenue';
+  let b = benches[key] || benches.revenue;
+  // Guard against a meaningless benchmark: an investment or dormant company
+  // with no revenue would otherwise fall to the RM1,000 floor — 0.05% of
+  // total assets — making every trivial item "material". Fall back to the
+  // largest sensible base and tell the auditor it happened (see the
+  // 'mat-benchmark' finding), rather than silently mis-scoping the audit.
+  let autoSwitched = null;
+  if (b.base * b.rate < 1000) {
+    const alt = Object.entries(benches)
+      .filter(([k, x]) => x.base * x.rate >= 1000)
+      .sort((x, y) => y[1].base * y[1].rate - x[1].base * x[1].rate)[0];
+    if (alt) { autoSwitched = { from: b.label, to: alt[1].label }; key = alt[0]; b = alt[1]; }
+  }
   const overall = Math.max(Math.round(b.base * b.rate), 1000);
   const pm = Math.round(overall * parseFloat(S.audit.pm || .75));
-  return { overall, pm, trivial: Math.round(overall * .05), label: b.label, benches, m };
+  return { overall, pm, trivial: Math.round(overall * .05), label: b.label, key, autoSwitched, benches, m };
 }
 
 /* ---------------- findings engine ---------------- */
@@ -603,6 +685,13 @@ function buildFindings() {
       'Open the Trial Balance screen and re-classify the listed rows (the dropdown on each row). An income line in an asset category, or an expense inside a liability, always shows up here — this check is the classifier auditing itself.');
   }
 
+  // 23b — the selected materiality benchmark produced nothing usable
+  if (mat.autoSwitched)
+    push('mat-benchmark','medium','Planning','Materiality benchmark switched automatically — confirm it',
+      'ISA 320',
+      `The selected benchmark (${mat.autoSwitched.from}) gives a base of effectively nil for this entity, which would drive materiality to the RM1,000 floor and make immaterial items look material. Materiality has been computed on ${mat.autoSwitched.to} instead (${fmtRM(mat.overall)}).`,
+      'For an investment holding, dormant or pre-revenue company, total assets is normally the appropriate benchmark. Confirm the choice on the A2 materiality paper and document the reasoning — practice reviewers specifically test benchmark rationale.');
+
   // 24 — no revenue classified at all on a populated TB
   if (S.tb.length >= 8 && m.revenue === 0 && t.cr > 0)
     push('no-revenue','high','Books','No account is classified as revenue',
@@ -844,6 +933,7 @@ function renderSetup() {
   set('f-activity',s.activity); set('f-framework',s.framework); set('f-capital',s.capital);
   set('f-employees',s.employees); set('f-firstaudit',s.firstaudit); set('f-foreign',s.foreign); set('f-address',s.address);
   set('f-secretary',s.secretary); set('f-secno',s.secno);
+  set('f-relatedco',s.relatedco); set('f-holdingco',s.holdingco);
   renderTeam().catch(()=>{});
 
   $('directors-list').innerHTML = S.directors.map((d,i) => `
@@ -881,7 +971,8 @@ function onSetupChange() {
   S.setup = { name:g('f-name'), regno:g('f-regno'), incdate:g('f-incdate'), fye:g('f-fye'),
     activity:g('f-activity'), framework:g('f-framework'), capital:g('f-capital'),
     employees:g('f-employees'), firstaudit:g('f-firstaudit'), foreign:g('f-foreign'), address:g('f-address'),
-    secretary:g('f-secretary'), secno:g('f-secno') };
+    secretary:g('f-secretary'), secno:g('f-secno'), relatedco:g('f-relatedco'), holdingco:g('f-holdingco'),
+    holdingcoType: S.setup.holdingcoType || '' };
   updateTop();
   const ex = exemptionAssess();
   const box = $('exemption-box'); if (box) renderSetup();
@@ -1249,15 +1340,25 @@ function cashflowHTML(m, p) {
 }
 
 /* ---------- tax ---------- */
+/* para 2A, Schedule 1 ITA — ALL conditions must hold for the SME tiers.
+   The related-company test is the one most often missed in practice: a small
+   company inside a group where ANY related company has paid-up capital above
+   RM2.5m loses the 15%/17% bands entirely and pays a flat 24%. Getting this
+   wrong understates tax by up to ~RM49,500 a year, so it is asked explicitly
+   rather than assumed. */
 function smeEligible() {
   const cap = num(S.setup.capital);
   const m = model();
   const gross = m.revenue + m.othinc;
-  return { cap, gross, ok: cap > 0 && cap <= 2500000 && gross <= 50000000 && S.setup.foreign !== 'yes',
+  const relatedFail = S.setup.relatedco === 'yes';
+  const ok = cap > 0 && cap <= 2500000 && gross <= 50000000 && S.setup.foreign !== 'yes' && !relatedFail;
+  return { cap, gross, ok, relatedFail,
     reasons: [
       { t:`Paid-up capital ≤ RM2.5m`, ok: cap>0 && cap <= 2500000, v: fmtRM(cap) },
       { t:`Gross business income ≤ RM50m`, ok: gross <= 50000000, v: fmtRM(gross) },
-      { t:`≤ 20% foreign/corporate shareholding`, ok: S.setup.foreign !== 'yes', v: S.setup.foreign==='yes'?'Exceeded':'OK' }
+      { t:`≤ 20% foreign/corporate shareholding`, ok: S.setup.foreign !== 'yes', v: S.setup.foreign==='yes'?'Exceeded':'OK' },
+      { t:`No related company with paid-up > RM2.5m`, ok: !relatedFail,
+        v: relatedFail ? 'Related co. exceeds' : (S.setup.relatedco === 'no' ? 'Confirmed' : 'NOT CONFIRMED') }
     ]};
 }
 /* Shared tax-charge computation — used by the Tax screen AND the findings
@@ -1308,13 +1409,17 @@ function renderTax() {
   for (const [id,k] of Object.entries(map)) { const el = $(id); if (el && document.activeElement !== el) el.value = S.tax[k] || ''; }
 
   const sme = smeEligible();
+  const relatedUnconfirmed = !S.setup.relatedco;
   $('tax-sme-box').innerHTML = `
     <div class="font-semibold text-indigo mb-1.5">SME preferential rate check (para 2A, Sch 1 ITA)</div>
     ${sme.reasons.map(r => `<div class="flex justify-between items-center py-0.5">
       <span>${r.t}</span><span class="pill ${r.ok?'pill-ok':'pill-risk'}">${r.v}</span></div>`).join('')}
     <div class="mt-1.5 font-semibold">${sme.ok
       ? 'Eligible — 15% on first RM150k, 17% on next RM450k, 24% on the balance.'
-      : 'Not eligible — flat 24% on all chargeable income.'}</div>`;
+      : 'Not eligible — flat 24% on all chargeable income.'}</div>
+    ${relatedUnconfirmed ? `<div class="mt-2 p-2 rounded-lg bg-warnbg text-warn text-[12px] font-medium">
+      The related-company test has not been confirmed. If any company related to this one has paid-up capital above RM2.5m, the SME tiers are lost entirely and tax is a flat 24% — a difference of up to RM49,500. Answer it on
+      <button class="underline font-semibold" onclick="show('setup')">Engagement Setup</button>.</div>` : ''}`;
 
   if (!S.tb.length) { $('tax-comp').innerHTML = '<div class="text-mut text-[13px]">Import a trial balance first.</div>';
     for (const id of ['tax-scan','tax-dt','tax-trueup','tax-etr','tax-cp204-plan','tax-wht']) { const e2 = $(id); if (e2) e2.innerHTML = ''; }
@@ -1408,6 +1513,14 @@ function renderTax() {
         <tr class="fs-line"><td>Suggested estimate (higher of the two)</td><td class="num mono">${fmt(suggested, true)}</td></tr>
         <tr class="fs-total"><td>Monthly instalment (12 instalments)</td><td class="num mono">${fmt(monthly, true)}</td></tr>
       </table>
+      ${(() => {
+        // s.107C(4A): an SME resident company is not required to furnish CP204
+        // for its first 2 years of assessment from commencement of operations.
+        if (!S.setup.incdate || !sme.ok) return '';
+        const incYear = new Date(S.setup.incdate).getFullYear();
+        return (nextYa - incYear) <= 2 ? `<div class="p-2 rounded-lg bg-okbg text-ok text-[11.5px] font-medium mb-2">
+          Incorporated ${dMY(S.setup.incdate)} — as an SME this company is exempt from furnishing CP204 for its first 2 years of assessment (s.107C(4A)). Confirm the commencement-of-operations date before relying on this.</div>` : '';
+      })()}
       <p class="text-[11.5px] text-mut mt-2">Submit e-CP204 by <strong>${dMY(dueBy)}</strong> (30 days before the basis period). Revision windows (CP204A): 6th month ~ <strong>${dMY(rev6)}</strong>, 9th month ~ <strong>${dMY(rev9)}</strong>. Underestimating below 70% of final tax attracts the 10% s.107C(10) penalty on the shortfall beyond the buffer${cp204 ? '' : ' — enter this year’s CP204 paid to activate the 85% floor'}.</p>
     </div>`;
   } else if (cpEl) cpEl.innerHTML = '';
@@ -1700,6 +1813,9 @@ function repAuditorHTML() {
       <p>This report is made solely to the members of the Company, as a body, in accordance with Section 266 of the Companies Act 2016 in Malaysia and for no other purpose. We do not assume responsibility to any other person for the content of this report.</p>
       ${sigBlockAuditor()}`;
 }
+/* Directors'-report value: the auditor's typed wording, or the standard
+   "nil" statement the Act still requires the report to carry. */
+const drv = (val, fallback) => val ? esc(val) : fallback;
 function repDirectorsHTML() {
   const { name, reg, fye } = repCtx();
     const m = S.tb.length ? model() : null;
@@ -1730,11 +1846,31 @@ function repDirectorsHTML() {
       : `<p>According to the register of directors' shareholdings, the interests of directors in office at the end of the financial year in shares of the Company are as disclosed therein. [Complete from the register — s.59 CA 2016, or enter each director's shareholding on the Engagement Setup screen.]</p>`}
       <h3>Directors' benefits</h3>
       <p>Since the end of the previous financial year, no director has received or become entitled to receive any benefit (other than a benefit included in the aggregate amount of remuneration received or due and receivable by directors as disclosed in the financial statements) by reason of a contract made by the Company with the director or with a firm of which the director is a member, or with a company in which the director has a substantial financial interest.</p>
+      <p>Neither during nor at the end of the financial year was the Company a party to any arrangement whose object was to enable the directors to acquire benefits by means of the acquisition of shares in, or debentures of, the Company or any other body corporate.</p>
+      <h3>Indemnity and insurance for officers</h3>
+      <p>${drv(S.notes.officerIndemnity, 'No indemnity was given to, or insurance effected for, any director, officer or auditor of the Company during the financial year.')}</p>
+      <h3>Issue of shares and debentures</h3>
+      <p>${drv(S.notes.shareIssue, 'There were no changes in the issued and paid-up share capital of the Company during the financial year, and no debentures were issued.')}</p>
+      <h3>Options granted over unissued shares</h3>
+      <p>No options were granted to any person to take up unissued shares of the Company during the financial year.</p>
+      ${S.setup.holdingco ? `<h3>Holding company</h3>
+      <p>The directors regard ${esc(S.setup.holdingco)} as the ${esc(S.setup.holdingcoType) || 'immediate and ultimate'} holding company of the Company.</p>` : ''}
       <h3>Other statutory information</h3>
       <p>Before the financial statements were made out, the directors took reasonable steps to ascertain that proper action had been taken in relation to the writing off of bad debts and the making of allowance for doubtful debts, and to ensure that current assets are shown in the accounting records at values expected to be realised in the ordinary course of business.</p>
       <p>At the date of this report, the directors are not aware of any circumstances which would render the amounts written off or allowed inadequate to any substantial extent, or the values of current assets misleading, or which have arisen which render adherence to the existing method of valuation of assets or liabilities misleading or inappropriate.</p>
-      <h3>Auditors</h3>
+      <p>${(m && (m.nat.BORR + m.nat.HP + m.nat.OD) > 0)
+        ? `As disclosed in the financial statements, certain assets of the Company are charged as security for banking facilities granted to the Company. Save as disclosed, no charge has arisen on the assets of the Company which secures the liability of any other person, and no contingent liability has arisen since the end of the financial year.`
+        : `At the date of this report, there does not exist any charge on the assets of the Company which has arisen since the end of the financial year which secures the liabilities of any other person, nor any contingent liability of the Company which has arisen since the end of the financial year.`}</p>
+      <p>In the opinion of the directors, no contingent or other liability of the Company has become enforceable, or is likely to become enforceable, within the period of twelve months after the end of the financial year which will or may substantially affect the ability of the Company to meet its obligations as and when they fall due.</p>
+      <h3>Significant events after the financial year</h3>
+      <p>${drv(S.notes.subsequentEvents, 'There were no material events subsequent to the end of the financial year that require disclosure or adjustment to the financial statements.')}</p>
+      <h3>Auditors and auditors' remuneration</h3>
       <p>The auditors, ${esc(S.sign.firm) || '[audit firm]'}, have expressed their willingness to continue in office.</p>
+      <p>The total amount of remuneration received or receivable by the auditors for the financial year${(() => {
+        const fee = sumRows(/audit fee|auditors'? remuneration/i);
+        const v = fee && fee.cy ? fee.cy : num(S.notes.auditFee);
+        return v ? ` amounted to ${fmtRM(v)}.` : ' is as disclosed in the financial statements.';
+      })()}</p>
       <p>Signed on behalf of the Board in accordance with a resolution of the directors:</p>
       <div class="mt-10 grid grid-cols-2 gap-10" style="max-width:36rem">
         <div style="border-top:1px solid #0B1437; padding-top:.4rem"><strong>${esc(S.directors[0]?.name) || '[Director 1]'}</strong><br>Director</div>
