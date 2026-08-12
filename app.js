@@ -2525,17 +2525,40 @@ async function adminCall(action, payload) {
 }
 
 /* ---------- first sign-in: the temporary password must be replaced ---------- */
-async function forcePasswordChange() {
-  const pw = prompt('Welcome to Mr Auditor.\n\nYour administrator issued you a temporary password. Choose your own password to continue (at least 8 characters):');
-  if (!pw || pw.length < 8) { toast('Password must be at least 8 characters'); return forcePasswordChange(); }
-  const again = prompt('Type the same password once more to confirm:');
-  if (again !== pw) { toast('Those did not match — try again'); return forcePasswordChange(); }
-  const { error } = await sb.auth.updateUser({ password: pw });
-  if (error) { toast('Could not set the password: ' + error.message); return forcePasswordChange(); }
-  await sb.from('app_users').update({ must_change_password: false }).eq('id', authUser.id);
-  firmProfile.must_change_password = false;
-  logActivityFirm('Set own password at first sign-in');
-  toast('Password set — you are signed in');
+/* Shows the modal and resolves once the password is actually changed. The
+   app stays behind it until then — a temporary password handed over by an
+   administrator must not survive the first session. */
+let _pwResolve = null;
+function forcePasswordChange() {
+  return new Promise((resolve) => {
+    _pwResolve = resolve;
+    const m = $('pwset');
+    m.classList.remove('hidden'); m.classList.add('flex');
+    $('pwset-a').value = ''; $('pwset-b').value = '';
+    $('pwset-err').classList.add('hidden');
+    setTimeout(() => $('pwset-a').focus(), 50);
+  });
+}
+async function pwSetSubmit(e) {
+  e.preventDefault();
+  const a = $('pwset-a').value, b = $('pwset-b').value, err = $('pwset-err'), btn = $('pwset-btn');
+  const fail = (msg) => { err.textContent = msg; err.classList.remove('hidden'); };
+  if (a.length < 8) return fail('Use at least 8 characters.'), false;
+  if (a !== b) return fail('Those two do not match.'), false;
+  btn.disabled = true; btn.textContent = 'Setting…';
+  try {
+    const { error } = await sb.auth.updateUser({ password: a });
+    if (error) throw new Error(error.message);
+    await sb.from('app_users').update({ must_change_password: false }).eq('id', authUser.id);
+    if (firmProfile) firmProfile.must_change_password = false;
+    logActivityFirm('Set own password at first sign-in');
+    const m = $('pwset'); m.classList.add('hidden'); m.classList.remove('flex');
+    toast('Password set — welcome to Mr Auditor');
+    if (_pwResolve) { _pwResolve(); _pwResolve = null; }
+  } catch (ex) {
+    fail(ex.message || 'Could not set the password — try again.');
+  } finally { btn.disabled = false; btn.textContent = 'Set password & continue'; }
+  return false;
 }
 /* Firm-level events have no engagement, so they cannot use logActivity(). */
 async function logActivityFirm(action, detail) {
@@ -2652,7 +2675,9 @@ async function renderAgency() {
     const { data: firms } = await sb.from('firms').select('*').order('created_at');
     const { data: pays } = await sb.from('agency_payments').select('*').order('paid_on', { ascending: false }).limit(50);
     const { data: tiers } = await sb.from('commission_tiers').select('*').order('min_clients');
-    const list = firms || [], payments = pays || [];
+    const { data: pouts } = await sb.from('agency_payouts').select('*').order('paid_on', { ascending: false }).limit(100);
+    const { data: agentRows } = await sb.from('app_users').select('id,email,name').eq('role', 'agent').order('name');
+    const list = firms || [], payments = pays || [], payouts = pouts || [], agents = agentRows || [];
     const activeCount = list.filter(f => f.active).length;
     const mrr = list.filter(f => f.active).reduce((s, f) => s + Number(f.monthly_price || 0), 0);
     const tier = (tiers || []).filter(t => activeCount >= t.min_clients).sort((a,b)=>b.min_clients-a.min_clients)[0];
@@ -2664,18 +2689,69 @@ async function renderAgency() {
       <div class="card card-pad"><div class="kpi-lbl">Commission tier</div><div class="kpi-val">${tier ? tier.rate_pct + '%' : '—'}</div><div class="text-[12px] text-mut mt-0.5">${tier ? 'from ' + tier.min_clients + ' active clients' : 'no ladder set'}</div></div>
       <div class="card card-pad"><div class="kpi-lbl">Commission earned</div><div class="kpi-val">${fmtRM(earned)}</div><div class="text-[12px] text-mut mt-0.5">on payments recorded</div></div>
     </div>
+    ${isPlatform() ? `
     <div class="card card-pad mb-4">
-      <h2 class="font-bold text-[15px] mb-2">Firms</h2>
-      ${list.length ? `<table class="tbl"><thead><tr><th>Firm</th><th>AF no.</th><th class="num">Monthly</th><th>Since</th><th>Status</th></tr></thead>
+      <div class="font-semibold text-[14px] mb-2">Sell Mr Auditor to a firm</div>
+      <div class="flex flex-wrap gap-2 items-end">
+        <div class="flex-1 min-w-[170px]"><label class="fieldlbl">Firm name</label><input class="field" id="ag-firm" placeholder="Wong &amp; Partners PLT"></div>
+        <div><label class="fieldlbl">AF no.</label><input class="field mono !w-28" id="ag-af" placeholder="AF 003311"></div>
+        <div class="flex-1 min-w-[170px]"><label class="fieldlbl">Administrator email</label><input class="field" id="ag-email" type="email" placeholder="admin@firm.my"></div>
+        <div class="flex-1 min-w-[130px]"><label class="fieldlbl">Their name</label><input class="field" id="ag-name" placeholder="Full name"></div>
+        <div><label class="fieldlbl">RM / month</label><input class="field mono !w-24" id="ag-price" type="number" value="599"></div>
+        <div><label class="fieldlbl">Sold by</label><select class="field !w-36" id="ag-agent">
+          <option value="">direct (no agent)</option>
+          ${agents.map(a => `<option value="${a.id}">${esc(a.name || a.email)}</option>`).join('')}</select></div>
+        <button class="btn btn-pri" onclick="agencyCreateFirm()">Create firm</button>
+      </div>
+      <div id="ag-firm-result" class="mt-2"></div>
+      <p class="text-[11.5px] text-mut mt-2">Creates the firm and its administrator login, and shows the password once to hand over. They set their own password at first sign-in and create their own staff.</p>
+    </div>` : ''}
+    <div class="card card-pad mb-4">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="font-bold text-[15px]">Firms</h2>
+        ${isPlatform() ? '<span class="text-[11.5px] text-mut">Suspending a firm locks its staff out at sign-in — nothing is deleted.</span>' : ''}
+      </div>
+      ${list.length ? `<table class="tbl"><thead><tr><th>Firm</th><th>AF no.</th><th class="num">Monthly</th><th>Since</th><th>Status</th>${isPlatform() ? '<th></th>' : ''}</tr></thead>
       <tbody>${list.map(f => `<tr>
         <td class="text-[12.5px] font-medium">${esc(f.name)}</td>
         <td class="text-[12.5px] text-mut mono">${esc(f.af_no || '—')}</td>
-        <td class="num mono">${f.monthly_price ? fmtRM(f.monthly_price) : '—'}</td>
+        <td class="num mono">${isPlatform()
+          ? `<input class="field mono !py-0.5 !text-[12px] !w-24 !text-right" value="${f.monthly_price || 0}" onchange="agencySetPrice('${f.id}', this.value)">`
+          : (f.monthly_price ? fmtRM(f.monthly_price) : '—')}</td>
         <td class="text-[12.5px] text-mut">${f.subscription_started_on ? dMY(f.subscription_started_on) : '—'}</td>
         <td>${f.active ? '<span class="pill pill-ok">active</span>' : '<span class="pill pill-risk">suspended</span>'}</td>
+        ${isPlatform() ? `<td class="text-right whitespace-nowrap">
+          <button class="btn btn-ghost !py-0.5 !px-1.5 !text-[11px]" onclick="agencyRecordPayment('${f.id}','${esc(f.name).replace(/'/g,"\\'")}',${f.monthly_price || 0})">Record payment</button>
+          <button class="btn btn-ghost !py-0.5 !px-1.5 !text-[11px]" onclick="agencySetActive('${f.id}', ${!f.active})">${f.active ? 'Suspend' : 'Reactivate'}</button>
+        </td>` : ''}
       </tr>`).join('')}</tbody></table>`
-      : '<p class="text-[12.5px] text-mut">No firms yet. Provision one from Elaine, or with the provision-firm endpoint.</p>'}
+      : '<p class="text-[12.5px] text-mut">No firms yet — create one above, or provision one from Elaine.</p>'}
     </div>
+    ${isPlatform() ? `
+    <div class="card card-pad mb-4">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="font-bold text-[15px]">Agents</h2>
+        <span class="text-[11.5px] text-mut">An agent sees only the firms they recruited.</span>
+      </div>
+      ${agents.length ? `<table class="tbl"><thead><tr><th>Agent</th><th>Email</th><th class="num">Firms</th><th class="num">Earned</th><th class="num">Paid out</th><th class="num">Owing</th><th></th></tr></thead>
+      <tbody>${agents.map(a => {
+        const theirs = list.filter(f => f.agent_id === a.id && f.active).length;
+        const earned = payments.filter(p => p.agent_id === a.id).reduce((s,p) => s + Number(p.commission || 0), 0);
+        const paid = payouts.filter(p => p.agent_id === a.id).reduce((s,p) => s + Number(p.amount || 0), 0);
+        return `<tr><td class="text-[12.5px] font-medium">${esc(a.name || '—')}</td>
+          <td class="text-[12.5px] text-mut">${esc(a.email)}</td>
+          <td class="num mono">${theirs}</td><td class="num mono">${fmtRM(earned)}</td>
+          <td class="num mono text-mut">${fmtRM(paid)}</td>
+          <td class="num mono ${earned - paid > 0 ? 'font-semibold' : 'text-mut'}">${fmtRM(earned - paid)}</td>
+          <td class="text-right"><button class="btn btn-ghost !py-0.5 !px-1.5 !text-[11px]" onclick="agencyRecordPayout('${a.id}','${esc(a.name || a.email).replace(/'/g,"\\'")}',${Math.max(earned - paid, 0)})">Settle</button></td>
+        </tr>`; }).join('')}</tbody></table>` : '<p class="text-[12.5px] text-mut mb-2">No agents yet.</p>'}
+      <div class="flex flex-wrap gap-2 items-end mt-3 border-t border-line pt-3">
+        <div class="flex-1 min-w-[170px]"><label class="fieldlbl">Agent email</label><input class="field" id="ag-a-email" type="email" placeholder="reseller@example.my"></div>
+        <div class="flex-1 min-w-[140px]"><label class="fieldlbl">Name</label><input class="field" id="ag-a-name" placeholder="Full name"></div>
+        <button class="btn btn-ghost" onclick="agencyCreateAgent()">Add agent</button>
+      </div>
+      <div id="ag-agent-result" class="mt-2"></div>
+    </div>` : ''}
     <div class="card card-pad">
       <h2 class="font-bold text-[15px] mb-2">Payments received</h2>
       ${payments.length ? `<table class="tbl"><thead><tr><th>Date</th><th>Firm</th><th class="num">Amount</th><th class="num">Rate</th><th class="num">Commission</th></tr></thead>
@@ -2689,6 +2765,73 @@ async function renderAgency() {
   } catch (e) {
     el.innerHTML = `<div class="card card-pad"><div class="text-[13px] text-warn">Agency tables not available: ${esc(e.message)}. Run supabase-schema-round4.sql.</div></div>`;
   }
+}
+
+/* ---------- agency console actions (platform only) ---------- */
+async function agencyCreateFirm() {
+  const box = $('ag-firm-result');
+  const firm_name = $('ag-firm').value.trim(), email = $('ag-email').value.trim();
+  if (!firm_name || !email) { toast('Firm name and administrator email are required'); return; }
+  box.innerHTML = '<span class="text-[12.5px] text-mut">Creating…</span>';
+  try {
+    const r = await adminCall('create_firm', { firm_name, email,
+      name: $('ag-name').value.trim(), af_no: $('ag-af').value.trim(),
+      monthly_price: num($('ag-price').value), agent_id: $('ag-agent').value || null });
+    box.innerHTML = `<div class="p-2.5 rounded-xl bg-okbg text-ok text-[12.5px]">
+      <div class="font-semibold mb-1">${esc(r.firm_name)} is live — hand these over</div>
+      <div class="mono">${esc(r.email)}</div><div class="mono text-[15px] font-bold">${esc(r.password)}</div>
+      <div class="mt-1 text-[11.5px]">They set their own password at first sign-in, then create their own staff under Firm &amp; Users.</div></div>`;
+    ['ag-firm','ag-af','ag-email','ag-name'].forEach(i => $(i).value = '');
+    logActivityFirm('Created a firm', `${r.firm_name} (${r.email})`);
+    renderAgency();
+  } catch (e) { box.innerHTML = `<div class="text-[12.5px] text-risk">${esc(e.message)}</div>`; }
+}
+async function agencyCreateAgent() {
+  const box = $('ag-agent-result');
+  const email = $('ag-a-email').value.trim();
+  if (!email) { toast('Enter the agent\'s email'); return; }
+  box.innerHTML = '<span class="text-[12.5px] text-mut">Creating…</span>';
+  try {
+    const r = await adminCall('create_agent', { email, name: $('ag-a-name').value.trim() });
+    box.innerHTML = `<div class="p-2.5 rounded-xl bg-okbg text-ok text-[12.5px]">
+      <div class="font-semibold mb-1">Agent login created — hand these over</div>
+      <div class="mono">${esc(r.email)}</div><div class="mono text-[15px] font-bold">${esc(r.password)}</div></div>`;
+    $('ag-a-email').value = ''; $('ag-a-name').value = '';
+    logActivityFirm('Created an agent', r.email);
+    renderAgency();
+  } catch (e) { box.innerHTML = `<div class="text-[12.5px] text-risk">${esc(e.message)}</div>`; }
+}
+async function agencySetActive(firm_id, active) {
+  if (!active && !confirm('Suspend this firm?\n\nIts staff will be stopped at sign-in until the subscription is settled. Nothing is deleted — reactivating restores everything exactly as it was.')) return;
+  try { await adminCall('set_firm_active', { firm_id, active });
+    logActivityFirm(active ? 'Reactivated a firm' : 'Suspended a firm'); renderAgency(); }
+  catch (e) { toast(e.message); }
+}
+async function agencySetPrice(firm_id, monthly_price) {
+  try { await adminCall('set_firm_price', { firm_id, monthly_price: num(monthly_price) }); toast('Price updated'); renderAgency(); }
+  catch (e) { toast(e.message); renderAgency(); }
+}
+async function agencyRecordPayment(firm_id, firmName, suggested) {
+  const amount = prompt(`Record a payment from ${firmName}.\n\nAmount received (RM):`, suggested || '');
+  if (amount === null) return;
+  if (!(num(amount) > 0)) { toast('Enter a positive amount'); return; }
+  const note = prompt('Note (optional) — e.g. "August subscription":') || '';
+  try {
+    const r = await adminCall('record_payment', { firm_id, amount: num(amount), note });
+    logActivityFirm('Recorded a subscription payment', `${firmName} ${fmtRM(num(amount))}`);
+    toast(r.commission ? `Recorded — agent commission ${fmtRM(r.commission)} at ${r.rate_pct}%` : 'Payment recorded');
+    renderAgency();
+  } catch (e) { toast(e.message); }
+}
+async function agencyRecordPayout(agent_id, agentName, owing) {
+  const amount = prompt(`Settle commission with ${agentName}.\n\nAmount owing is ${fmtRM(owing)}. Pay how much (RM)?`, owing || '');
+  if (amount === null) return;
+  if (!(num(amount) > 0)) { toast('Enter a positive amount'); return; }
+  try {
+    await adminCall('record_payout', { agent_id, amount: num(amount), note: prompt('Note (optional):') || '' });
+    logActivityFirm('Settled agent commission', `${agentName} ${fmtRM(num(amount))}`);
+    toast('Payout recorded'); renderAgency();
+  } catch (e) { toast(e.message); }
 }
 
 /* ---------- engagement team & roles (F1) ---------- */
@@ -5782,6 +5925,22 @@ async function demoSeedVault(clientId) {
 
 /* ---------- auth gate (Supabase) ---------- */
 function authSetError(msg) { const el = $('gate-err'); el.textContent = msg; el.classList.remove('hidden'); }
+/* Signing out fires SIGNED_OUT, which reloads the page — so a message set
+   just before it would vanish and the user would be dropped on a blank login
+   screen assuming they had typed the wrong password. Park the reason first
+   and show it after the reload. */
+const BOUNCE_KEY = 'mr-auditor-bounce';
+async function authBounce(msg) {
+  try { sessionStorage.setItem(BOUNCE_KEY, msg); } catch (e) {}
+  await sb.auth.signOut();
+  authSetError(msg);   // in case the reload never happens
+}
+function showBounceReason() {
+  try {
+    const msg = sessionStorage.getItem(BOUNCE_KEY);
+    if (msg) { sessionStorage.removeItem(BOUNCE_KEY); authSetError(msg); }
+  } catch (e) {}
+}
 /* Kept for the bootstrap case only — the gate no longer offers sign-up, since
    logins are issued by a firm administrator (or by provisioning from Elaine).
    Calling it from the console still works if the platform ever needs to mint
@@ -5833,8 +5992,16 @@ async function afterAuth() {
   // A disabled login must not get past the gate even if it still holds a
   // session; the edge function also bans it in Auth, this is the second lock.
   if (firmProfile && !firmProfile.active) {
-    await sb.auth.signOut();
-    authSetError('This login has been disabled. Speak to your firm administrator.');
+    await authBounce('This login has been disabled. Speak to your firm administrator.');
+    return;
+  }
+  // Subscription gate. A suspended firm is an unpaid firm, so its staff stop
+  // at the door — otherwise "suspended" would mean nothing and the product
+  // would be free to anyone who stopped paying. The platform and agents are
+  // exempt: they have no firm of their own and must still be able to get in
+  // to reactivate one.
+  if (firmRecord && !firmRecord.active && !isPlatform() && !isAgent()) {
+    await authBounce(`${firmRecord.name}'s subscription is not active, so the firm's files are locked. Nothing has been deleted — settle the subscription and everything returns exactly as it was.`);
     return;
   }
   $('gate').style.display = 'none';
@@ -5874,6 +6041,7 @@ show('home');
   sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   const { data: { session } } = await sb.auth.getSession();
   if (session) { authUser = session.user; await afterAuth(); }
+  showBounceReason();   // explain a forced sign-out that survived the reload
   sb.auth.onAuthStateChange((event) => {
     if (event === 'SIGNED_OUT') location.reload();
   });

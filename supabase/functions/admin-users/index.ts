@@ -148,6 +148,132 @@ Deno.serve(async (req) => {
       return json({ ok: true, role });
     }
 
+    // ── Platform actions: running the subscription business ──────────────────
+    // Everything below is super_admin only. These are the same operations
+    // Elaine's console performs, exposed here so Mr Auditor can be sold and
+    // administered on its own without depending on another product.
+
+    if (action === "create_firm") {
+      if (!isPlatform) return json({ error: "Platform only" }, 403);
+      const firmName = String(body.firm_name ?? "").trim();
+      const email = String(body.email ?? "").trim().toLowerCase();
+      const name = String(body.name ?? "").trim() || "Firm administrator";
+      const afNo = String(body.af_no ?? "").trim() || null;
+      const monthlyPrice = Number(body.monthly_price ?? 0) || 0;
+      const agentId = String(body.agent_id ?? "").trim() || null;
+      if (!firmName || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+        return json({ error: "A firm name and a valid administrator email are required" }, 400);
+      }
+      const { data: clash } = await admin.from("app_users").select("id").eq("email", email).maybeSingle();
+      if (clash) return json({ error: "That email already has a login" }, 400);
+
+      const { data: firm, error: fErr } = await admin.from("firms").insert({
+        name: firmName, af_no: afNo, monthly_price: monthlyPrice, agent_id: agentId,
+        subscription_started_on: new Date().toISOString().slice(0, 10),
+      }).select().single();
+      if (fErr) throw new Error(fErr.message);
+
+      const password = String(body.password ?? "").trim() || tempPassword();
+      const { data: created, error: cErr } = await admin.auth.admin.createUser({
+        email, password, email_confirm: true, user_metadata: { name },
+      });
+      if (cErr) {
+        await admin.from("firms").delete().eq("id", firm.id);   // never strand an empty firm
+        return json({ error: cErr.message }, 400);
+      }
+      const { error: pErr } = await admin.from("app_users").insert({
+        id: created.user!.id, firm_id: firm.id, email, name,
+        role: "admin", active: true, must_change_password: true,
+      });
+      if (pErr) {
+        await admin.auth.admin.deleteUser(created.user!.id);
+        await admin.from("firms").delete().eq("id", firm.id);
+        throw new Error(pErr.message);
+      }
+      return json({ ok: true, firm_id: firm.id, firm_name: firm.name, email, password });
+    }
+
+    if (action === "create_agent") {
+      if (!isPlatform) return json({ error: "Platform only" }, 403);
+      const email = String(body.email ?? "").trim().toLowerCase();
+      const name = String(body.name ?? "").trim() || "Agent";
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json({ error: "Enter a valid email address" }, 400);
+      const password = String(body.password ?? "").trim() || tempPassword();
+      const { data: created, error: cErr } = await admin.auth.admin.createUser({
+        email, password, email_confirm: true, user_metadata: { name },
+      });
+      if (cErr) return json({ error: /registered|exists/i.test(cErr.message) ? "That email already has a login" : cErr.message }, 400);
+      // An agent belongs to no firm — they manage many — and reports to the
+      // platform user who created them.
+      const { error: pErr } = await admin.from("app_users").insert({
+        id: created.user!.id, firm_id: null, email, name,
+        role: "agent", active: true, must_change_password: true, parent_id: me.id,
+      });
+      if (pErr) { await admin.auth.admin.deleteUser(created.user!.id); throw new Error(pErr.message); }
+      return json({ ok: true, email, password });
+    }
+
+    if (action === "set_firm_active") {
+      if (!isPlatform) return json({ error: "Platform only" }, 403);
+      const { error } = await admin.from("firms").update({ active: !!body.active })
+        .eq("id", String(body.firm_id ?? ""));
+      if (error) throw new Error(error.message);
+      return json({ ok: true, active: !!body.active });
+    }
+
+    if (action === "set_firm_price") {
+      if (!isPlatform) return json({ error: "Platform only" }, 403);
+      const price = Number(body.monthly_price);
+      if (!(price >= 0)) return json({ error: "Enter a valid monthly price" }, 400);
+      const { error } = await admin.from("firms").update({ monthly_price: price })
+        .eq("id", String(body.firm_id ?? ""));
+      if (error) throw new Error(error.message);
+      return json({ ok: true, monthly_price: price });
+    }
+
+    if (action === "record_payment") {
+      if (!isPlatform) return json({ error: "Platform only" }, 403);
+      const firmId = String(body.firm_id ?? "");
+      const amount = Number(body.amount);
+      if (!firmId || !(amount > 0)) return json({ error: "A firm and a positive amount are required" }, 400);
+      const { data: firm } = await admin.from("firms").select("*").eq("id", firmId).maybeSingle();
+      if (!firm) return json({ error: "Firm not found" }, 400);
+
+      // Commission is SNAPSHOTTED at today's tier. Moving an agent up a tier
+      // later must never silently rewrite what they already earned, so the
+      // rate is stored on the payment rather than recomputed on display.
+      let ratePct = 0, commission = 0;
+      if (firm.agent_id) {
+        const { count } = await admin.from("firms")
+          .select("id", { count: "exact", head: true }).eq("agent_id", firm.agent_id).eq("active", true);
+        const { data: tiers } = await admin.from("commission_tiers").select("*").order("min_clients");
+        const tier = (tiers ?? []).filter((t) => (count ?? 0) >= t.min_clients).pop();
+        ratePct = tier ? Number(tier.rate_pct) : 0;
+        commission = Math.round(amount * ratePct) / 100;
+      }
+      const { error } = await admin.from("agency_payments").insert({
+        firm_id: firmId, amount, paid_on: String(body.paid_on ?? "").trim() || new Date().toISOString().slice(0, 10),
+        note: String(body.note ?? "").trim() || null,
+        agent_id: firm.agent_id, rate_pct: ratePct, commission, recorded_by: me.id,
+      });
+      if (error) throw new Error(error.message);
+      return json({ ok: true, rate_pct: ratePct, commission });
+    }
+
+    if (action === "record_payout") {
+      if (!isPlatform) return json({ error: "Platform only" }, 403);
+      const agentId = String(body.agent_id ?? "");
+      const amount = Number(body.amount);
+      if (!agentId || !(amount > 0)) return json({ error: "An agent and a positive amount are required" }, 400);
+      const { error } = await admin.from("agency_payouts").insert({
+        agent_id: agentId, amount,
+        paid_on: String(body.paid_on ?? "").trim() || new Date().toISOString().slice(0, 10),
+        note: String(body.note ?? "").trim() || null,
+      });
+      if (error) throw new Error(error.message);
+      return json({ ok: true });
+    }
+
     return json({ error: "Unknown action" }, 400);
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);
