@@ -51,6 +51,7 @@ let DB = { ver:2, activeId:null, clients:[] };
 let S = BLANK();
 function newClient(label) {
   const c = Object.assign(BLANK(), { id:nid(), created: Date.now() });
+  stampFirmIdentity([c]);
   if (label) c.setup.name = label;
   DB.clients.push(c);
   switchClient(c.id);
@@ -2499,6 +2500,28 @@ async function loadFirmProfile() {
   } catch (e) { /* tables not migrated yet — legacy single-user mode */ }
 }
 const firmRole = () => (firmProfile ? firmProfile.role : 'owner-legacy');
+/* The signing firm's own identity. A firm that has just been sold Mr Auditor
+   should never have to type its own name and AF number into the sign-off of
+   every engagement it opens — that identity belongs to the tenant, not to the
+   file. It flows into the auditor's report, the directors' report, the
+   corporate information page, the statutory declaration and the audit pack. */
+const firmDefaults = () => ({
+  firm: (firmRecord && firmRecord.name) || '',
+  af:   (firmRecord && firmRecord.af_no) || '',
+});
+/* Fills blanks only — never overwrites what an auditor has typed, because a
+   firm may sign under a different registered name on a particular engagement. */
+function stampFirmIdentity(list) {
+  const d = firmDefaults();
+  if (!d.firm && !d.af) return 0;
+  let n = 0;
+  (list || []).forEach(c => {
+    if (!c || !c.sign) return;
+    if (!c.sign.firm && d.firm) { c.sign.firm = d.firm; n++; }
+    if (!c.sign.af   && d.af)   { c.sign.af   = d.af;   n++; }
+  });
+  return n;
+}
 const isFirmAdmin = () => ['super_admin','admin'].includes(firmRole());
 const isPlatform = () => firmRole() === 'super_admin';
 const isAgent = () => firmRole() === 'agent';
@@ -2560,6 +2583,72 @@ async function pwSetSubmit(e) {
   } finally { btn.disabled = false; btn.textContent = 'Set password & continue'; }
   return false;
 }
+/* ---------- Ask for a value ----------
+   Replaces prompt(), which some browsers refuse outright — it throws, and the
+   handler that called it dies with it. Resolves to null when cancelled, so
+   call sites read exactly like the prompt() they replaced. */
+let _askResolve = null;
+function askText(opts) {
+  return new Promise((resolve) => {
+    _askResolve = resolve;
+    const m = $('askbox');
+    $('askbox-title').textContent = opts.title || 'Enter a value';
+    $('askbox-help').textContent = opts.help || '';
+    $('askbox-help').classList.toggle('hidden', !opts.help);
+    $('askbox-lbl').textContent = opts.label || 'Value';
+    $('askbox-a').value = opts.value != null ? String(opts.value) : '';
+    $('askbox-a').type = opts.numeric ? 'number' : 'text';
+    const second = !!opts.secondLabel;
+    $('askbox-lbl2').textContent = opts.secondLabel || '';
+    $('askbox-lbl2').classList.toggle('hidden', !second);
+    $('askbox-b').classList.toggle('hidden', !second);
+    $('askbox-b').value = '';
+    m.classList.remove('hidden'); m.classList.add('flex');
+    setTimeout(() => { $('askbox-a').focus(); $('askbox-a').select(); }, 50);
+  });
+}
+function _askClose(val) {
+  const m = $('askbox'); m.classList.add('hidden'); m.classList.remove('flex');
+  if (_askResolve) { const r = _askResolve; _askResolve = null; r(val); }
+}
+function askBoxSubmit(e) { e.preventDefault(); _askClose({ value: $('askbox-a').value, note: $('askbox-b').value }); return false; }
+function askBoxCancel() { _askClose(null); }
+
+/* ---------- Credentials to hand over ----------
+   A generated password is shown exactly once. Creating a login also refreshes
+   the list it appears in, and that re-render used to wipe the very thing the
+   administrator needed to read. So the credential is held here instead of in
+   the markup, and every screen that can mint one re-emits it on each render
+   until it is explicitly dismissed. */
+let pendingCred = null;      // {title, email, password, note}
+function credShow(title, email, password, note) {
+  pendingCred = { title, email, password, note: note || '' };
+}
+function credBanner() {
+  if (!pendingCred) return '';
+  const c = pendingCred;
+  return `<div class="card card-pad mb-4" style="border:1.5px solid #1D7D33; background:#F2FBF4">
+    <div class="flex items-start justify-between gap-4 flex-wrap">
+      <div>
+        <div class="font-semibold text-[14px] mb-1.5" style="color:#1D7D33">${esc(c.title)}</div>
+        <div class="mono text-[13px]">${esc(c.email)}</div>
+        <div class="mono text-[19px] font-bold tracking-wide select-all">${esc(c.password)}</div>
+        ${c.note ? `<div class="text-[11.5px] text-mut mt-1.5">${esc(c.note)}</div>` : ''}
+      </div>
+      <div class="flex gap-2">
+        <button class="btn btn-ghost !py-1 !text-[12px]" onclick="credCopy()">Copy</button>
+        <button class="btn btn-mint !py-1 !text-[12px]" onclick="credDismiss()">I have saved it</button>
+      </div>
+    </div></div>`;
+}
+async function credCopy() {
+  if (!pendingCred) return;
+  const txt = `${pendingCred.email}\n${pendingCred.password}`;
+  try { await navigator.clipboard.writeText(txt); toast('Copied — paste it to them now'); }
+  catch (e) { toast('Copy failed — select the password and copy it by hand'); }
+}
+function credDismiss() { pendingCred = null; render(current); }
+
 /* Firm-level events have no engagement, so they cannot use logActivity(). */
 async function logActivityFirm(action, detail) {
   if (!sb || !authUser || !firmProfile) return;
@@ -2585,6 +2674,7 @@ async function renderFirm() {
   const ROLE_PILLS = { admin:'pill-ok', partner:'pill-info', manager:'pill-info', staff:'pill-mut', super_admin:'pill-ok', agent:'pill-warn' };
   const admin = isFirmAdmin();
   el.innerHTML = `
+  ${credBanner()}
   <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
     <div class="card card-pad lg:col-span-2">
       <div class="flex items-center justify-between mb-1">
@@ -2640,10 +2730,8 @@ async function firmCreateUser() {
   try {
     const r = await adminCall('create', { email, name, role });
     logActivityFirm('Created a login', `${email} as ${role}`);
-    box.innerHTML = `<div class="p-2.5 rounded-xl bg-okbg text-ok text-[12.5px]">
-      <div class="font-semibold mb-1">Login created — hand these over</div>
-      <div class="mono">${esc(r.email)}</div><div class="mono text-[15px] font-bold">${esc(r.password)}</div>
-      <div class="mt-1 text-[11.5px]">They must choose their own password at first sign-in. This is the only time it is shown.</div></div>`;
+    credShow('Login created — hand these over', r.email, r.password,
+      'They must choose their own password at first sign-in. This is the only time it is shown.');
     $('fu-email').value = ''; $('fu-name').value = '';
     renderFirm();
   } catch (e) { box.innerHTML = `<div class="text-[12.5px] text-risk">${esc(e.message)}</div>`; }
@@ -2653,7 +2741,8 @@ async function firmResetPassword(id, email) {
   try {
     const r = await adminCall('reset_password', { user_id: id });
     logActivityFirm('Reset a password', email);
-    alert(`New temporary password for ${r.email}:\n\n${r.password}\n\nHand it over — they must change it at next sign-in.`);
+    credShow('New temporary password — hand it over', r.email, r.password,
+      'Their old password stopped working. They must choose a new one at next sign-in.');
     renderFirm();
   } catch (e) { toast(e.message); }
 }
@@ -2683,6 +2772,7 @@ async function renderAgency() {
     const tier = (tiers || []).filter(t => activeCount >= t.min_clients).sort((a,b)=>b.min_clients-a.min_clients)[0];
     const earned = payments.reduce((s, p) => s + Number(p.commission || 0), 0);
     el.innerHTML = `
+    ${credBanner()}
     <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-4">
       <div class="card card-pad"><div class="kpi-lbl">${isAgent() ? 'My firms' : 'Firms'}</div><div class="kpi-val">${activeCount}</div><div class="text-[12px] text-mut mt-0.5">active subscriptions</div></div>
       <div class="card card-pad"><div class="kpi-lbl">Monthly recurring</div><div class="kpi-val">${fmtRM(mrr)}</div><div class="text-[12px] text-mut mt-0.5">at current prices</div></div>
@@ -2777,10 +2867,8 @@ async function agencyCreateFirm() {
     const r = await adminCall('create_firm', { firm_name, email,
       name: $('ag-name').value.trim(), af_no: $('ag-af').value.trim(),
       monthly_price: num($('ag-price').value), agent_id: $('ag-agent').value || null });
-    box.innerHTML = `<div class="p-2.5 rounded-xl bg-okbg text-ok text-[12.5px]">
-      <div class="font-semibold mb-1">${esc(r.firm_name)} is live — hand these over</div>
-      <div class="mono">${esc(r.email)}</div><div class="mono text-[15px] font-bold">${esc(r.password)}</div>
-      <div class="mt-1 text-[11.5px]">They set their own password at first sign-in, then create their own staff under Firm &amp; Users.</div></div>`;
+    credShow(`${r.firm_name} is live — hand these over`, r.email, r.password,
+      'They set their own password at first sign-in, then create their own staff under Firm & Users.');
     ['ag-firm','ag-af','ag-email','ag-name'].forEach(i => $(i).value = '');
     logActivityFirm('Created a firm', `${r.firm_name} (${r.email})`);
     renderAgency();
@@ -2793,9 +2881,8 @@ async function agencyCreateAgent() {
   box.innerHTML = '<span class="text-[12.5px] text-mut">Creating…</span>';
   try {
     const r = await adminCall('create_agent', { email, name: $('ag-a-name').value.trim() });
-    box.innerHTML = `<div class="p-2.5 rounded-xl bg-okbg text-ok text-[12.5px]">
-      <div class="font-semibold mb-1">Agent login created — hand these over</div>
-      <div class="mono">${esc(r.email)}</div><div class="mono text-[15px] font-bold">${esc(r.password)}</div></div>`;
+    credShow('Agent login created — hand these over', r.email, r.password,
+      'They set their own password at first sign-in and will then see only the firms they sell.');
     $('ag-a-email').value = ''; $('ag-a-name').value = '';
     logActivityFirm('Created an agent', r.email);
     renderAgency();
@@ -2812,10 +2899,12 @@ async function agencySetPrice(firm_id, monthly_price) {
   catch (e) { toast(e.message); renderAgency(); }
 }
 async function agencyRecordPayment(firm_id, firmName, suggested) {
-  const amount = prompt(`Record a payment from ${firmName}.\n\nAmount received (RM):`, suggested || '');
-  if (amount === null) return;
+  const a = await askText({ title: `Payment from ${firmName}`, label: 'Amount received (RM)',
+    value: suggested || '', numeric: true, secondLabel: 'Note',
+    help: 'Commission is worked out at the agent\'s tier as it stands right now, and stays at that rate for good.' });
+  if (a === null) return;
+  const amount = a.value, note = a.note || '';
   if (!(num(amount) > 0)) { toast('Enter a positive amount'); return; }
-  const note = prompt('Note (optional) — e.g. "August subscription":') || '';
   try {
     const r = await adminCall('record_payment', { firm_id, amount: num(amount), note });
     logActivityFirm('Recorded a subscription payment', `${firmName} ${fmtRM(num(amount))}`);
@@ -2824,11 +2913,14 @@ async function agencyRecordPayment(firm_id, firmName, suggested) {
   } catch (e) { toast(e.message); }
 }
 async function agencyRecordPayout(agent_id, agentName, owing) {
-  const amount = prompt(`Settle commission with ${agentName}.\n\nAmount owing is ${fmtRM(owing)}. Pay how much (RM)?`, owing || '');
-  if (amount === null) return;
+  const a = await askText({ title: `Settle with ${agentName}`, label: 'Pay how much (RM)',
+    value: owing || '', numeric: true, secondLabel: 'Note',
+    help: `Owing right now: ${fmtRM(owing)}.` });
+  if (a === null) return;
+  const amount = a.value;
   if (!(num(amount) > 0)) { toast('Enter a positive amount'); return; }
   try {
-    await adminCall('record_payout', { agent_id, amount: num(amount), note: prompt('Note (optional):') || '' });
+    await adminCall('record_payout', { agent_id, amount: num(amount), note: a.note || '' });
     logActivityFirm('Settled agent commission', `${agentName} ${fmtRM(num(amount))}`);
     toast('Payout recorded'); renderAgency();
   } catch (e) { toast(e.message); }
@@ -6018,6 +6110,7 @@ async function afterAuth() {
   if (!cloud.length) cloud = [Object.assign(BLANK(), { id:nid(), created:Date.now() })];
   DB = { ver:2, activeId: cloud[0].id, clients: cloud };
   S = cloud[0];
+  stampFirmIdentity(DB.clients);   // before the save, so it sticks
   saveState();
   render(current);
   updateTop();

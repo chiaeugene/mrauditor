@@ -127,23 +127,44 @@ tailwind.config = {
     <p class="text-[12px] text-mut mt-3">Logins are issued by your firm's administrator.<br>No account? Ask them to create one for you.</p>
   </form>
 
-  <!-- first sign-in: replace the temporary password. A native prompt() is
-       blocked in some browsers and is a poor first impression for a paying
-       firm, so this is a real form. -->
-  <form id="pwset" class="fixed inset-0 z-50 hidden items-center justify-center bg-ink/60 backdrop-blur" onsubmit="return pwSetSubmit(event)">
-    <div class="card card-pad w-[23rem] max-w-[90vw]">
-      <h2 class="font-bold text-[17px] tracking-display">Choose your password</h2>
-      <p id="pwset-sub" class="text-[13px] text-mut mt-1 mb-4">Your administrator issued you a temporary password. Set your own to continue.</p>
-      <label class="fieldlbl">New password</label>
-      <input class="field" id="pwset-a" type="password" autocomplete="new-password" placeholder="At least 8 characters">
-      <label class="fieldlbl mt-3">Confirm password</label>
-      <input class="field" id="pwset-b" type="password" autocomplete="new-password" placeholder="Type it again">
-      <div id="pwset-err" class="text-[12.5px] text-risk mt-2 hidden"></div>
-      <button id="pwset-btn" type="submit" class="btn btn-pri w-full mt-4 !text-[15px]">Set password &amp; continue</button>
-      <p class="text-[11.5px] text-mut mt-3">Nobody else can see this — not your administrator, not us.</p>
-    </div>
-  </form>
 </div>
+
+<!-- First sign-in: replace the temporary password. A native prompt() is blocked
+     in some browsers and is a poor first impression for a paying firm, so this
+     is a real form. It MUST live outside #gate: the gate is hidden the moment
+     a session is accepted, and a modal nested inside it would be hidden too —
+     leaving a new firm staring at an empty app that never finishes loading. -->
+<form id="pwset" class="fixed inset-0 z-[60] hidden items-center justify-center bg-ink/60 backdrop-blur" onsubmit="return pwSetSubmit(event)">
+  <div class="card card-pad w-[23rem] max-w-[90vw]">
+    <h2 class="font-bold text-[17px] tracking-display">Choose your password</h2>
+    <p id="pwset-sub" class="text-[13px] text-mut mt-1 mb-4">Your administrator issued you a temporary password. Set your own to continue.</p>
+    <label class="fieldlbl">New password</label>
+    <input class="field" id="pwset-a" type="password" autocomplete="new-password" placeholder="At least 8 characters">
+    <label class="fieldlbl mt-3">Confirm password</label>
+    <input class="field" id="pwset-b" type="password" autocomplete="new-password" placeholder="Type it again">
+    <div id="pwset-err" class="text-[12.5px] text-risk mt-2 hidden"></div>
+    <button id="pwset-btn" type="submit" class="btn btn-pri w-full mt-4 !text-[15px]">Set password &amp; continue</button>
+    <p class="text-[11.5px] text-mut mt-3">Nobody else can see this — not your administrator, not us.</p>
+  </div>
+</form>
+
+<!-- Generic "ask for a value" modal. A native prompt() is refused outright by
+     some browsers (it throws, taking the whole handler down with it), which is
+     no way to record money. -->
+<form id="askbox" class="fixed inset-0 z-[60] hidden items-center justify-center bg-ink/60 backdrop-blur" onsubmit="return askBoxSubmit(event)">
+  <div class="card card-pad w-[23rem] max-w-[90vw]">
+    <h2 id="askbox-title" class="font-bold text-[16px] tracking-display">Enter a value</h2>
+    <p id="askbox-help" class="text-[12.5px] text-mut mt-1 mb-3"></p>
+    <label id="askbox-lbl" class="fieldlbl">Value</label>
+    <input class="field" id="askbox-a" autocomplete="off">
+    <label id="askbox-lbl2" class="fieldlbl mt-3 hidden">Note</label>
+    <input class="field hidden" id="askbox-b" autocomplete="off" placeholder="Optional">
+    <div class="flex gap-2 mt-4">
+      <button type="button" class="btn btn-ghost flex-1" onclick="askBoxCancel()">Cancel</button>
+      <button type="submit" class="btn btn-pri flex-1">Confirm</button>
+    </div>
+  </div>
+</form>
 
 <div class="aurora-bg" aria-hidden="true"><span></span><span></span><span></span></div>
 
