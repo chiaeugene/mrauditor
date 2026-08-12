@@ -124,7 +124,7 @@ tailwind.config = {
     </div>
     <div id="gate-err" class="text-[12.5px] text-risk mt-3 hidden text-left"></div>
     <button id="gate-submit" type="submit" class="btn btn-pri w-full mt-4 !text-[15px]">Sign in</button>
-    <button type="button" id="gate-toggle" class="text-[12.5px] text-indigo mt-3 hover:underline" onclick="authToggleMode()">Don't have an account? Sign up</button>
+    <p class="text-[12px] text-mut mt-3">Logins are issued by your firm's administrator.<br>No account? Ask them to create one for you.</p>
   </form>
 </div>
 
@@ -196,6 +196,14 @@ tailwind.config = {
       <div class="navlink" data-scr="queries">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/><path d="M12 8v4M12 15h.01"/></svg>
         <span>Queries, PBC &amp; Trail</span>
+      </div>
+      <div class="navlink hidden" data-scr="firm" id="nav-firm">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+        <span>Firm &amp; Users</span>
+      </div>
+      <div class="navlink hidden" data-scr="agency" id="nav-agency">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></svg>
+        <span>Agency console</span>
       </div>
       <div class="navlink" data-scr="compliance">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg>
@@ -403,6 +411,16 @@ tailwind.config = {
         <button class="btn btn-ghost qt-tab" data-qt="activity">Activity trail</button>
       </div>
       <div id="qt-render"></div>
+    </section>
+
+    <!-- ================= FIRM & USERS ================= -->
+    <section class="screen" id="scr-firm">
+      <div id="firm-render"></div>
+    </section>
+
+    <!-- ================= AGENCY CONSOLE ================= -->
+    <section class="screen" id="scr-agency">
+      <div id="agency-render"></div>
     </section>
 
     <!-- ================= COMPLIANCE & DATA ================= -->

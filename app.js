@@ -832,7 +832,7 @@ const TITLES = { home:'Mr Auditor', register:'Register a company', dashboard:'Da
   audit:'Audit Engine', wps:'Audit File — Working Papers', fs:'Financial Statements', tax:'Tax Computation',
   reports:'Reports & Sign-off', pack:'Full Audit Pack', vault:'Evidence Vault', toolkit:'Auditor Toolkit',
   defence:'Defence & Positions', ref:'Regulatory Compass', queries:'Queries, PBC & Audit Trail',
-  compliance:'Compliance & Data' };
+  compliance:'Compliance & Data', firm:'Firm & Users', agency:'Agency Console' };
 let current = 'dashboard';
 function show(scr) {
   current = scr;
@@ -854,7 +854,7 @@ function render(scr = current) {
   ({ home:renderHome, register:renderRegister, dashboard:renderDashboard, setup:renderSetup, tb:renderTB, audit:renderAudit,
      wps:renderWps, fs:renderFS, tax:renderTax, reports:renderReports, pack:renderPack, vault:renderVault,
      toolkit:renderToolkit, defence:renderDefence, ref:renderRef, queries:renderQueriesScreen,
-     compliance:renderCompliance }[scr])();
+     compliance:renderCompliance, firm:renderFirm, agency:renderAgency }[scr])();
 }
 function updateTop() {
   $('top-sub').textContent = S.setup.name
@@ -2475,6 +2475,222 @@ function renderActivity(el) {
   });
 }
 
+/* ============================================================
+   FIRM ACCOUNTS, ROLES & THE AGENCY LAYER
+   The firm is the tenant. Logins are created by a firm admin through the
+   admin-users edge function (the service key can never live in this file —
+   the anon key beside it is public), so there is no self-signup. A user with
+   no profile row is a legacy owner-only account and keeps working exactly as
+   before: firm scoping only ever ADDS access.
+   ============================================================ */
+let firmProfile = null;      // my app_users row
+let firmRecord = null;       // my firms row
+
+async function loadFirmProfile() {
+  firmProfile = null; firmRecord = null;
+  if (!sb || !authUser) return;
+  try {
+    const { data } = await sb.from('app_users').select('*').eq('id', authUser.id).maybeSingle();
+    firmProfile = data || null;
+    if (firmProfile && firmProfile.firm_id) {
+      const { data: f } = await sb.from('firms').select('*').eq('id', firmProfile.firm_id).maybeSingle();
+      firmRecord = f || null;
+    }
+  } catch (e) { /* tables not migrated yet — legacy single-user mode */ }
+}
+const firmRole = () => (firmProfile ? firmProfile.role : 'owner-legacy');
+const isFirmAdmin = () => ['super_admin','admin'].includes(firmRole());
+const isPlatform = () => firmRole() === 'super_admin';
+const isAgent = () => firmRole() === 'agent';
+/* The audit role used for review-locking. An engagement-level membership
+   always wins; otherwise the firm role decides, and a legacy account with no
+   profile keeps the partner rights it has always had on its own files. */
+function firmAuditRole() {
+  const r = firmRole();
+  if (r === 'owner-legacy' || r === 'super_admin' || r === 'admin' || r === 'partner') return 'partner';
+  if (r === 'manager') return 'manager';
+  return 'staff';
+}
+async function adminCall(action, payload) {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) throw new Error('Sign in again');
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/admin-users`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': SUPABASE_ANON_KEY },
+    body: JSON.stringify({ action, ...payload }),
+  });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok || d.error) throw new Error(d.error || `Server error (${res.status})`);
+  return d;
+}
+
+/* ---------- first sign-in: the temporary password must be replaced ---------- */
+async function forcePasswordChange() {
+  const pw = prompt('Welcome to Mr Auditor.\n\nYour administrator issued you a temporary password. Choose your own password to continue (at least 8 characters):');
+  if (!pw || pw.length < 8) { toast('Password must be at least 8 characters'); return forcePasswordChange(); }
+  const again = prompt('Type the same password once more to confirm:');
+  if (again !== pw) { toast('Those did not match — try again'); return forcePasswordChange(); }
+  const { error } = await sb.auth.updateUser({ password: pw });
+  if (error) { toast('Could not set the password: ' + error.message); return forcePasswordChange(); }
+  await sb.from('app_users').update({ must_change_password: false }).eq('id', authUser.id);
+  firmProfile.must_change_password = false;
+  logActivityFirm('Set own password at first sign-in');
+  toast('Password set — you are signed in');
+}
+/* Firm-level events have no engagement, so they cannot use logActivity(). */
+async function logActivityFirm(action, detail) {
+  if (!sb || !authUser || !firmProfile) return;
+  try {
+    await sb.from('activity_log').insert({ engagement_id: null, owner: authUser.id,
+      actor: authUser.email, action, detail: detail || null });
+  } catch (e) { /* engagement_id is NOT NULL — firm events are simply not logged there */ }
+}
+
+/* ---------- Firm & Users screen ---------- */
+async function renderFirm() {
+  const el = $('firm-render');
+  if (!firmProfile) {
+    el.innerHTML = `<div class="card card-pad">
+      <h2 class="font-bold text-[15px] mb-1">Firm &amp; Users</h2>
+      <p class="text-[13px] text-mut">This login is not attached to a firm yet. Run <span class="mono">supabase-schema-round4.sql</span> and provision your firm, or ask the platform to attach this account.</p></div>`;
+    return;
+  }
+  el.innerHTML = `<div class="card card-pad"><div class="text-mut text-[13px]">Loading the firm…</div></div>`;
+  let users = [];
+  try { users = (await adminCall('list', {})).users || []; }
+  catch (e) { el.innerHTML = `<div class="card card-pad"><div class="text-[13px] text-warn">Could not load users: ${esc(e.message)}</div></div>`; return; }
+  const ROLE_PILLS = { admin:'pill-ok', partner:'pill-info', manager:'pill-info', staff:'pill-mut', super_admin:'pill-ok', agent:'pill-warn' };
+  const admin = isFirmAdmin();
+  el.innerHTML = `
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+    <div class="card card-pad lg:col-span-2">
+      <div class="flex items-center justify-between mb-1">
+        <h2 class="font-bold text-[15px]">${esc((firmRecord && firmRecord.name) || 'Your firm')}</h2>
+        <span class="pill ${ROLE_PILLS[firmRole()] || 'pill-mut'}">you: ${firmRole()}</span>
+      </div>
+      <p class="text-[12.5px] text-mut mb-3">${firmRecord && firmRecord.af_no ? esc(firmRecord.af_no) + ' · ' : ''}${users.length} login(s). Everyone here can open every engagement belonging to the firm; review-locking still applies per working paper.</p>
+      <table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
+      <tbody>${users.map(u => `<tr>
+        <td class="text-[12.5px]">${esc(u.name || '—')}</td>
+        <td class="text-[12.5px] text-mut">${esc(u.email)}</td>
+        <td>${admin && u.id !== authUser.id ? `<select class="field !py-0.5 !text-[11.5px] !w-24" onchange="firmSetRole('${u.id}', this.value)">
+            ${['admin','partner','manager','staff'].map(r => `<option ${u.role===r?'selected':''}>${r}</option>`).join('')}</select>`
+          : `<span class="pill ${ROLE_PILLS[u.role]||'pill-mut'}">${u.role}</span>`}</td>
+        <td>${u.active ? '<span class="pill pill-ok">active</span>' : '<span class="pill pill-risk">disabled</span>'}
+            ${u.must_change_password ? '<span class="pill pill-warn !text-[10px]">must set password</span>' : ''}</td>
+        <td class="text-right">${admin && u.id !== authUser.id ? `
+          <button class="btn btn-ghost !py-0.5 !px-1.5 !text-[11px]" onclick="firmResetPassword('${u.id}','${esc(u.email)}')">Reset password</button>
+          <button class="btn btn-ghost !py-0.5 !px-1.5 !text-[11px]" onclick="firmSetActive('${u.id}', ${!u.active})">${u.active ? 'Disable' : 'Enable'}</button>` : ''}</td>
+      </tr>`).join('')}</tbody></table>
+      ${admin ? `
+      <div class="border-t border-line mt-4 pt-3">
+        <div class="font-semibold text-[13.5px] mb-2">Create a login</div>
+        <div class="flex flex-wrap gap-2 items-end">
+          <div class="flex-1 min-w-[160px]"><label class="fieldlbl">Email</label><input class="field" id="fu-email" type="email" placeholder="colleague@firm.my"></div>
+          <div class="flex-1 min-w-[140px]"><label class="fieldlbl">Name</label><input class="field" id="fu-name" placeholder="Full name"></div>
+          <div><label class="fieldlbl">Role</label><select class="field !w-28" id="fu-role">
+            <option value="staff">staff</option><option value="manager">manager</option>
+            <option value="partner">partner</option><option value="admin">admin</option></select></div>
+          <button class="btn btn-pri" onclick="firmCreateUser()">Create login</button>
+        </div>
+        <div id="fu-result" class="mt-2"></div>
+        <p class="text-[11.5px] text-mut mt-2">A password is generated for you to hand over. They sign in with it and must immediately choose their own — you never see their real password, and there is no self-signup.</p>
+      </div>` : '<p class="text-[12px] text-mut mt-3">Only a firm administrator can create or disable logins.</p>'}
+    </div>
+    <div class="card card-pad">
+      <h2 class="font-bold text-[15px] mb-2">Subscription</h2>
+      ${firmRecord ? `<table class="fs-doc" style="width:100%">
+        <tr><td>Plan</td><td class="num mono">${firmRecord.monthly_price ? fmtRM(firmRecord.monthly_price) + '/mo' : 'not set'}</td></tr>
+        <tr><td>Since</td><td class="num mono">${firmRecord.subscription_started_on ? dMY(firmRecord.subscription_started_on) : '—'}</td></tr>
+        <tr><td>Status</td><td class="num">${firmRecord.active ? '<span class="pill pill-ok">active</span>' : '<span class="pill pill-risk">suspended</span>'}</td></tr>
+      </table>
+      <p class="text-[11.5px] text-mut mt-2">Billing is handled by your reseller or by Mr Auditor directly. Price and status are set by the platform, not from here.</p>`
+      : '<p class="text-[12.5px] text-mut">No firm record.</p>'}
+    </div>
+  </div>`;
+}
+async function firmCreateUser() {
+  const email = $('fu-email').value.trim(), name = $('fu-name').value.trim(), role = $('fu-role').value;
+  if (!email) { toast('Enter an email address'); return; }
+  const box = $('fu-result');
+  box.innerHTML = '<span class="text-[12.5px] text-mut">Creating…</span>';
+  try {
+    const r = await adminCall('create', { email, name, role });
+    logActivityFirm('Created a login', `${email} as ${role}`);
+    box.innerHTML = `<div class="p-2.5 rounded-xl bg-okbg text-ok text-[12.5px]">
+      <div class="font-semibold mb-1">Login created — hand these over</div>
+      <div class="mono">${esc(r.email)}</div><div class="mono text-[15px] font-bold">${esc(r.password)}</div>
+      <div class="mt-1 text-[11.5px]">They must choose their own password at first sign-in. This is the only time it is shown.</div></div>`;
+    $('fu-email').value = ''; $('fu-name').value = '';
+    renderFirm();
+  } catch (e) { box.innerHTML = `<div class="text-[12.5px] text-risk">${esc(e.message)}</div>`; }
+}
+async function firmResetPassword(id, email) {
+  if (!confirm(`Reset the password for ${email}? Their current password stops working immediately.`)) return;
+  try {
+    const r = await adminCall('reset_password', { user_id: id });
+    logActivityFirm('Reset a password', email);
+    alert(`New temporary password for ${r.email}:\n\n${r.password}\n\nHand it over — they must change it at next sign-in.`);
+    renderFirm();
+  } catch (e) { toast(e.message); }
+}
+async function firmSetActive(id, active) {
+  if (!active && !confirm('Disable this login? They will be signed out and unable to sign in.')) return;
+  try { await adminCall('set_active', { user_id: id, active }); logActivityFirm(active ? 'Enabled a login' : 'Disabled a login'); renderFirm(); }
+  catch (e) { toast(e.message); }
+}
+async function firmSetRole(id, role) {
+  try { await adminCall('set_role', { user_id: id, role }); logActivityFirm('Changed a role', role); renderFirm(); }
+  catch (e) { toast(e.message); renderFirm(); }
+}
+
+/* ---------- Agency console (platform + resellers) ---------- */
+async function renderAgency() {
+  const el = $('agency-render');
+  el.innerHTML = `<div class="card card-pad"><div class="text-mut text-[13px]">Loading…</div></div>`;
+  try {
+    const { data: firms } = await sb.from('firms').select('*').order('created_at');
+    const { data: pays } = await sb.from('agency_payments').select('*').order('paid_on', { ascending: false }).limit(50);
+    const { data: tiers } = await sb.from('commission_tiers').select('*').order('min_clients');
+    const list = firms || [], payments = pays || [];
+    const activeCount = list.filter(f => f.active).length;
+    const mrr = list.filter(f => f.active).reduce((s, f) => s + Number(f.monthly_price || 0), 0);
+    const tier = (tiers || []).filter(t => activeCount >= t.min_clients).sort((a,b)=>b.min_clients-a.min_clients)[0];
+    const earned = payments.reduce((s, p) => s + Number(p.commission || 0), 0);
+    el.innerHTML = `
+    <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-4">
+      <div class="card card-pad"><div class="kpi-lbl">${isAgent() ? 'My firms' : 'Firms'}</div><div class="kpi-val">${activeCount}</div><div class="text-[12px] text-mut mt-0.5">active subscriptions</div></div>
+      <div class="card card-pad"><div class="kpi-lbl">Monthly recurring</div><div class="kpi-val">${fmtRM(mrr)}</div><div class="text-[12px] text-mut mt-0.5">at current prices</div></div>
+      <div class="card card-pad"><div class="kpi-lbl">Commission tier</div><div class="kpi-val">${tier ? tier.rate_pct + '%' : '—'}</div><div class="text-[12px] text-mut mt-0.5">${tier ? 'from ' + tier.min_clients + ' active clients' : 'no ladder set'}</div></div>
+      <div class="card card-pad"><div class="kpi-lbl">Commission earned</div><div class="kpi-val">${fmtRM(earned)}</div><div class="text-[12px] text-mut mt-0.5">on payments recorded</div></div>
+    </div>
+    <div class="card card-pad mb-4">
+      <h2 class="font-bold text-[15px] mb-2">Firms</h2>
+      ${list.length ? `<table class="tbl"><thead><tr><th>Firm</th><th>AF no.</th><th class="num">Monthly</th><th>Since</th><th>Status</th></tr></thead>
+      <tbody>${list.map(f => `<tr>
+        <td class="text-[12.5px] font-medium">${esc(f.name)}</td>
+        <td class="text-[12.5px] text-mut mono">${esc(f.af_no || '—')}</td>
+        <td class="num mono">${f.monthly_price ? fmtRM(f.monthly_price) : '—'}</td>
+        <td class="text-[12.5px] text-mut">${f.subscription_started_on ? dMY(f.subscription_started_on) : '—'}</td>
+        <td>${f.active ? '<span class="pill pill-ok">active</span>' : '<span class="pill pill-risk">suspended</span>'}</td>
+      </tr>`).join('')}</tbody></table>`
+      : '<p class="text-[12.5px] text-mut">No firms yet. Provision one from Elaine, or with the provision-firm endpoint.</p>'}
+    </div>
+    <div class="card card-pad">
+      <h2 class="font-bold text-[15px] mb-2">Payments received</h2>
+      ${payments.length ? `<table class="tbl"><thead><tr><th>Date</th><th>Firm</th><th class="num">Amount</th><th class="num">Rate</th><th class="num">Commission</th></tr></thead>
+      <tbody>${payments.map(p => { const f = list.find(x => x.id === p.firm_id);
+        return `<tr><td class="mono text-[11.5px]">${dMY(p.paid_on)}</td><td class="text-[12.5px]">${esc(f ? f.name : '—')}</td>
+        <td class="num mono">${fmtRM(p.amount)}</td><td class="num mono text-[12px]">${p.rate_pct}%</td>
+        <td class="num mono">${fmtRM(p.commission)}</td></tr>`; }).join('')}</tbody></table>
+      <p class="text-[11px] text-mut mt-2">The rate and commission on each row are the ones that applied when the payment was recorded — moving a tier later never rewrites what was already earned.</p>`
+      : '<p class="text-[12.5px] text-mut">No payments recorded yet.</p>'}
+    </div>`;
+  } catch (e) {
+    el.innerHTML = `<div class="card card-pad"><div class="text-[13px] text-warn">Agency tables not available: ${esc(e.message)}. Run supabase-schema-round4.sql.</div></div>`;
+  }
+}
+
 /* ---------- engagement team & roles (F1) ---------- */
 /* The owner invites colleagues by email; RLS opens the engagement to that
    email once its owner has run supabase-schema-round3.sql. Roles gate the
@@ -2486,10 +2702,14 @@ async function teamList(clientId) {
   return error ? [] : data;
 }
 function amOwner() { return !S._owner || S._owner === (authUser && authUser.id); }
+/* An explicit engagement membership always wins; otherwise the firm role
+   decides, so a firm's partner does not have to be invited file by file. */
 function myRole() {
-  if (amOwner()) return 'partner';
   const me = (S._members || []).find(m => authUser && m.member_email.toLowerCase() === (authUser.email || '').toLowerCase());
-  return me ? me.role : 'staff';
+  if (me) return me.role;
+  if (amOwner()) return 'partner';
+  if (firmProfile && S._firmId && S._firmId === firmProfile.firm_id) return firmAuditRole();
+  return 'staff';
 }
 const ROLE_PILL = { staff:'pill-mut', manager:'pill-info', partner:'pill-ok' };
 async function teamAdd() {
@@ -5295,12 +5515,21 @@ async function cloudPushEngagement(client) {
   // team member who is NOT the owner, and the update payload must never carry
   // the owner column (RLS would reject it, and a member must not be able to
   // claim ownership).
-  const { _owner, _members, ...persistable } = client;
+  const { _owner, _members, _firmId, ...persistable } = client;
   const payload = { name: client.setup.name || '', fye: client.setup.fye || null, data: persistable };
   const { data, error } = await sb.from('engagements').update(payload).eq('id', client.id).select('id');
   if (error) { console.error('cloud save failed', error); return; }
   if (!data || !data.length) {
-    const { error: insErr } = await sb.from('engagements').insert({ id: client.id, owner: authUser.id, ...payload });
+    // New engagements are stamped with my firm so the whole firm can open
+    // them. firm_id is deliberately NOT in the update payload — a member must
+    // not be able to move a file into another firm.
+    const ins = { id: client.id, owner: authUser.id, ...payload };
+    if (firmProfile && firmProfile.firm_id) ins.firm_id = firmProfile.firm_id;
+    let { error: insErr } = await sb.from('engagements').insert(ins);
+    if (insErr && /firm_id/.test(insErr.message || '')) {   // pre-round-4 database
+      delete ins.firm_id;
+      ({ error: insErr } = await sb.from('engagements').insert(ins));
+    }
     if (insErr) console.error('cloud save failed', insErr);
   }
 }
@@ -5311,10 +5540,12 @@ async function cloudDeleteEngagement(id) {
 }
 async function cloudLoadEngagements() {
   if (!sb || !authUser) return [];
-  // No owner filter — RLS returns engagements I own plus ones shared with me.
-  const { data, error } = await sb.from('engagements').select('id,owner,data').order('created_at', { ascending:true });
+  // No owner filter — RLS returns engagements I own, ones shared with me, and
+  // (once round 4 is applied) every engagement belonging to my firm.
+  let { data, error } = await sb.from('engagements').select('id,owner,firm_id,data').order('created_at', { ascending:true });
+  if (error) ({ data, error } = await sb.from('engagements').select('id,owner,data').order('created_at', { ascending:true })); // pre-round-4
   if (error || !data) return [];
-  return data.map(row => { const c = hydrate(row.data); c.id = row.id; c._owner = row.owner; return c; });
+  return data.map(row => { const c = hydrate(row.data); c.id = row.id; c._owner = row.owner; c._firmId = row.firm_id || null; return c; });
 }
 
 /* ---------- reset ---------- */
@@ -5551,6 +5782,10 @@ async function demoSeedVault(clientId) {
 
 /* ---------- auth gate (Supabase) ---------- */
 function authSetError(msg) { const el = $('gate-err'); el.textContent = msg; el.classList.remove('hidden'); }
+/* Kept for the bootstrap case only — the gate no longer offers sign-up, since
+   logins are issued by a firm administrator (or by provisioning from Elaine).
+   Calling it from the console still works if the platform ever needs to mint
+   the very first account by hand. */
 function authToggleMode() {
   const form = $('gate-form');
   const toSignup = form.dataset.mode !== 'signup';
@@ -5594,7 +5829,22 @@ async function authSignOut() {
   location.reload();
 }
 async function afterAuth() {
+  await loadFirmProfile();
+  // A disabled login must not get past the gate even if it still holds a
+  // session; the edge function also bans it in Auth, this is the second lock.
+  if (firmProfile && !firmProfile.active) {
+    await sb.auth.signOut();
+    authSetError('This login has been disabled. Speak to your firm administrator.');
+    return;
+  }
   $('gate').style.display = 'none';
+  // Reveal only what this role may use.
+  const navFirm = $('nav-firm'), navAgency = $('nav-agency');
+  if (navFirm) navFirm.classList.toggle('hidden', !firmProfile);
+  if (navAgency) navAgency.classList.toggle('hidden', !(isPlatform() || isAgent()));
+  document.querySelectorAll('#mobile-nav [data-scr="firm"]').forEach(n => n.classList.toggle('hidden', !firmProfile));
+  document.querySelectorAll('#mobile-nav [data-scr="agency"]').forEach(n => n.classList.toggle('hidden', !(isPlatform() || isAgent())));
+  if (firmProfile && firmProfile.must_change_password) await forcePasswordChange();
   // cloud is the source of truth — no localStorage auto-migration (it would resurrect
   // deliberately deleted engagements from a stale browser cache)
   let cloud = await cloudLoadEngagements();
