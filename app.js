@@ -1115,8 +1115,9 @@ function tbApplySuggestion(i, cat) {
   toast(`${r.name} → ${CAT[cat].label}`);
 }
 function addTbRow(){ if (guardArchived()) return; S.tb.push({id:nid(), name:'', cat:'ADMIN', dr:'', cr:'', py:'', autoWeak:false}); renderTB(); }
-function clearTb(){ if (guardArchived()) return;
-  if (!S.tb.length || confirm('Remove all trial balance rows and posted adjustments?'))
+async function clearTb(){ if (guardArchived()) return;
+  if (!S.tb.length || await askConfirm('Remove all trial balance rows and posted adjustments?',
+      { title:'Clear the trial balance', confirmLabel:'Clear it', danger:true }))
   { S.tb = []; S.adjustments = []; S.findingStatus = {}; renderTB(); saveState(); } }
 
 /* Shared TB import core: takes an array of cell-arrays [name, n1, n2, n3] */
@@ -2435,7 +2436,8 @@ function renderClients() {
 function newClientPrompt() { regOpen(); }
 async function deleteClient(id) {
   const c = DB.clients.find(x => x.id === id);
-  if (!confirm(`Delete the engagement "${c?.setup.name || 'Untitled'}" and all its attached evidence? This cannot be undone.`)) return;
+  if (!await askConfirm(`Delete the engagement "${c?.setup.name || 'Untitled'}" and all its attached evidence? This cannot be undone.`,
+      { title:'Delete this engagement', confirmLabel:'Delete it', danger:true })) return;
   DB.clients = DB.clients.filter(x => x.id !== id);
   if (!DB.clients.length) newClient('');
   if (DB.activeId === id) { DB.activeId = DB.clients[0].id; S = activeClient(); }
@@ -2698,6 +2700,19 @@ function fsmBuild(p) {
              autoWeak: basis === 'guessed' };
   });
 
+  /* Paid-up capital decides whether the SME tax tiers apply — 15% on the first
+     RM150k and 17% on the next RM450k instead of a flat 24%. Mr Auditor cannot
+     assume it, so an imported company with the field blank is taxed at 24% and
+     the auditor may never notice why. Full Set Monster has no such field, but
+     it does carry the share capital account, and for an Sdn Bhd the issued and
+     paid-up capital IS that balance. Seeded here, still to be agreed to the
+     SSM records — which the auditor does anyway. */
+  const scRow = c.tb.find(r => r.cat === 'SC');
+  if (scRow && !c.setup.capital) {
+    const paidUp = Math.abs(num(scRow.cr) - num(scRow.dr));
+    if (paidUp > 0) c.setup.capital = String(paidUp);
+  }
+
   /* Provenance. A file that came out of another system must say so on its own
      face — whoever picks it up in six months cannot be expected to remember. */
   c.importedFrom = {
@@ -2731,6 +2746,41 @@ function fsmBuild(p) {
     (ex ? '<div>' + ex + ' open exception' + (ex > 1 ? 's' : '') + ' came across with the books.</div>' : '') +
     '</div>' };
 }
+
+/* A confirmation the browser cannot swallow.
+
+   window.confirm() is suppressed outright in some browsing contexts, where it
+   returns false without ever showing anything. For a Cancel-by-default dialog
+   that means the button appears to do nothing at all: the partner presses
+   "Finalise & archive", no dialog opens, nothing happens, and there is no
+   message explaining why. Same family of failure as prompt(), which does not
+   even fail quietly — it throws and takes the handler with it.
+
+   Resolves true/false, so a call site reads the same as the confirm() it
+   replaced, only with await in front. */
+let _confResolve = null;
+function askConfirm(message, opts) {
+  opts = opts || {};
+  return new Promise((resolve) => {
+    _confResolve = resolve;
+    const m = $('confbox');
+    $('confbox-title').textContent = opts.title || 'Are you sure?';
+    $('confbox-body').innerHTML = String(message || '')
+      .split('\n').filter(l => l.trim())
+      .map(l => `<p class="mb-2">${esc(l)}</p>`).join('');
+    const go = $('confbox-go');
+    go.textContent = opts.confirmLabel || 'Confirm';
+    go.className = 'btn flex-1 ' + (opts.danger ? 'btn-risk' : 'btn-pri');
+    m.classList.remove('hidden'); m.classList.add('flex');
+    setTimeout(() => go.focus(), 50);
+  });
+}
+function _confClose(val) {
+  const m = $('confbox'); m.classList.add('hidden'); m.classList.remove('flex');
+  if (_confResolve) { const r = _confResolve; _confResolve = null; r(val); }
+}
+function confBoxGo() { _confClose(true); }
+function confBoxCancel() { _confClose(false); }
 
 /* ---------- Ask for a value ----------
    Replaces prompt(), which some browsers refuse outright — it throws, and the
@@ -2802,9 +2852,15 @@ function credDismiss() { pendingCred = null; render(current); }
 async function logActivityFirm(action, detail) {
   if (!sb || !authUser || !firmProfile) return;
   try {
-    await sb.from('activity_log').insert({ engagement_id: null, owner: authUser.id,
+    /* Scoped by firm, not by engagement — these events belong to the practice.
+       Until round 5 engagement_id was NOT NULL, so every one of these inserts
+       was rejected and silently swallowed: a firm had no record of who created
+       whose login. */
+    const { error } = await sb.from('activity_log').insert({
+      engagement_id: null, firm_id: firmProfile.firm_id || null, owner: authUser.id,
       actor: authUser.email, action, detail: detail || null });
-  } catch (e) { /* engagement_id is NOT NULL — firm events are simply not logged there */ }
+    if (error) console.warn('firm activity not logged:', error.message);
+  } catch (e) { console.warn('firm activity not logged:', e.message); }
 }
 
 /* ---------- Firm & Users screen ---------- */
@@ -2886,7 +2942,8 @@ async function firmCreateUser() {
   } catch (e) { box.innerHTML = `<div class="text-[12.5px] text-risk">${esc(e.message)}</div>`; }
 }
 async function firmResetPassword(id, email) {
-  if (!confirm(`Reset the password for ${email}? Their current password stops working immediately.`)) return;
+  if (!await askConfirm(`Reset the password for ${email}? Their current password stops working immediately.`,
+      { title:'Reset password', confirmLabel:'Reset it' })) return;
   try {
     const r = await adminCall('reset_password', { user_id: id });
     logActivityFirm('Reset a password', email);
@@ -2896,7 +2953,8 @@ async function firmResetPassword(id, email) {
   } catch (e) { toast(e.message); }
 }
 async function firmSetActive(id, active) {
-  if (!active && !confirm('Disable this login? They will be signed out and unable to sign in.')) return;
+  if (!active && !await askConfirm('Disable this login? They will be signed out and unable to sign in again.',
+      { title:'Disable login', confirmLabel:'Disable it', danger:true })) return;
   try { await adminCall('set_active', { user_id: id, active }); logActivityFirm(active ? 'Enabled a login' : 'Disabled a login'); renderFirm(); }
   catch (e) { toast(e.message); }
 }
@@ -3038,7 +3096,8 @@ async function agencyCreateAgent() {
   } catch (e) { box.innerHTML = `<div class="text-[12.5px] text-risk">${esc(e.message)}</div>`; }
 }
 async function agencySetActive(firm_id, active) {
-  if (!active && !confirm('Suspend this firm?\n\nIts staff will be stopped at sign-in until the subscription is settled. Nothing is deleted — reactivating restores everything exactly as it was.')) return;
+  if (!active && !await askConfirm('Its staff will be stopped at sign-in until the subscription is settled. Nothing is deleted — reactivating restores everything exactly as it was.',
+      { title:'Suspend this firm', confirmLabel:'Suspend it', danger:true })) return;
   try { await adminCall('set_firm_active', { firm_id, active });
     logActivityFirm(active ? 'Reactivated a firm' : 'Suspended a firm'); renderAgency(); }
   catch (e) { toast(e.message); }
@@ -3112,7 +3171,8 @@ async function teamAdd() {
   renderTeam();
 }
 async function teamRemove(id, email) {
-  if (!confirm(`Remove ${email} from this engagement?`)) return;
+  if (!await askConfirm(`Remove ${email} from this engagement?`,
+      { title:'Remove team member', confirmLabel:'Remove them', danger:true })) return;
   const { error } = await sb.from('engagement_members').delete().eq('id', id);
   if (error) { toast('Could not remove'); return; }
   logActivity('Removed team member', email);
@@ -3171,7 +3231,8 @@ function guardArchived() {
 async function finaliseFile() {
   if (myRole() !== 'partner') { toast('Only the engagement partner (or file owner) can finalise the file'); return; }
   if (!S.sign.partner || !S.sign.date) { toast('Sign the report first — partner name and report date are required'); return; }
-  if (!confirm(`Finalise and archive the audit file for ${S.setup.name}?\n\nThe entire engagement becomes read-only. Reopening requires a documented reason and is logged permanently.`)) return;
+  if (!await askConfirm('The entire engagement becomes read-only. Reopening it afterwards requires a documented reason and is logged permanently.',
+      { title:`Finalise and archive ${S.setup.name || 'this file'}`, confirmLabel:'Finalise & archive' })) return;
   const ev = { type:'finalised', by: authUser ? authUser.email : 'unknown', at: new Date().toISOString() };
   S.archive = { state:'final', finalisedBy: ev.by, finalisedAt: ev.at,
     events: [...(S.archive && S.archive.events || []), ev] };
@@ -3184,7 +3245,9 @@ async function finaliseFile() {
 function addYears7(iso) { const d = new Date(iso); d.setFullYear(d.getFullYear() + 7); return d; }
 async function reopenFile() {
   if (myRole() !== 'partner') { toast('Only the engagement partner (or file owner) can reopen an archived file'); return; }
-  const reason = prompt('ISA 230 requires the reason for modifying an assembled file to be documented.\n\nReason for reopening:');
+  const _reopenAnswer = await askText({ title:'Reopen the assembled file', label:'Reason for reopening',
+    help:'ISA 230 requires the reason for modifying an assembled file to be documented. It is kept permanently.' });
+  const reason = _reopenAnswer && _reopenAnswer.value;
   if (!reason || !reason.trim()) { toast('Reopening cancelled — a reason is required'); return; }
   const ev = { type:'reopened', by: authUser ? authUser.email : 'unknown', at: new Date().toISOString(), reason: reason.trim() };
   S.archive = { ...S.archive, state:'reopened', events: [...(S.archive.events || []), ev] };
@@ -3559,7 +3622,8 @@ async function vaultDownload(id) {
 }
 async function vaultDelete(id) {
   if (guardArchived()) return;
-  if (!confirm('Remove this file from the vault?')) return;
+  if (!await askConfirm('Remove this file from the vault?',
+      { title:'Remove evidence', confirmLabel:'Remove it', danger:true })) return;
   const row = await vaultRow(id);
   if (row) await sb.storage.from('evidence').remove([row.storage_path]);
   await sb.from('evidence_files').delete().eq('id', id);
@@ -3661,10 +3725,12 @@ async function vaultAnalyze(cat) {
     slot.innerHTML = `<div class="border border-line rounded-xl p-3 mt-2 text-[12.5px] text-mut">Could not analyze: ${esc(e.message||'unknown error')}</div>`;
   }
 }
-function vaultAnalyzeToWp(cat, btn) {
+async function vaultAnalyzeToWp(cat, btn) {
   const box = btn.closest('div.border').querySelector('[data-ai-text]');
   const text = decodeURIComponent(box.dataset.aiText);
-  const ref = prompt('Which working paper reference should this be added to? (e.g. C, F, A5)');
+  const _refAnswer = await askText({ title:'Add to a working paper', label:'Working paper reference',
+    help:'For example C for cash and bank, F for PPE, A5 for planning.' });
+  const ref = _refAnswer && _refAnswer.value;
   if (!ref) return;
   const existing = wpGet(`plan.notes.${ref}`, '');
   wpSet(`plan.notes.${ref}`, (existing ? existing + '\n\n' : '') + `[AI-drafted document analysis — ${cat}, ${dMY(dISO(new Date()))} — verify against source documents; this paper's sign-off covers the content]\n${text}`);
@@ -5207,8 +5273,9 @@ function wpReview(ref, name) {
   if (name) { logActivity('Reviewed & locked working paper', ref + ' by ' + name); toast(`${ref} reviewed — paper locked`); }
   wpShow(ref);
 }
-function wpReopen(ref) {
-  if (!confirm(`Reopen ${ref} for editing? The review signature will be cleared and the reopening is logged.`)) return;
+async function wpReopen(ref) {
+  if (!await askConfirm(`The review signature on ${ref} will be cleared, and the reopening is logged.`,
+      { title:`Reopen ${ref} for editing`, confirmLabel:'Reopen it' })) return;
   const prev = wpGet(`wpSign.${ref}.rev`, '');
   wpSet(`wpSign.${ref}.rev`, ''); wpSet(`wpSign.${ref}.revDate`, '');
   logActivity('Reopened working paper', `${ref} (was reviewed by ${prev})`);
@@ -5934,7 +6001,8 @@ async function cloudLoadEngagements() {
 
 /* ---------- reset ---------- */
 async function resetAllData() {
-  if (!confirm('Delete every engagement (including all vault documents) and start with a single blank one? This cannot be undone.')) return;
+  if (!await askConfirm('Delete every engagement, including all vault documents, and start again with a single blank one? This cannot be undone.',
+      { title:'Reset everything', confirmLabel:'Delete everything', danger:true })) return;
   const all = [...DB.clients];
   for (const c of all) {
     await cloudDeleteEngagementFiles(c.id).catch(()=>{});

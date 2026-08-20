@@ -176,6 +176,20 @@ tailwind.config = {
   </div>
 </form>
 
+<!-- Confirmation the browser cannot swallow. window.confirm() is suppressed in
+     some contexts, where it returns false without showing anything — so a
+     Cancel-by-default action simply appears not to work. -->
+<form id="confbox" class="fixed inset-0 z-[60] hidden items-center justify-center bg-ink/60 backdrop-blur p-4" onsubmit="event.preventDefault(); confBoxGo(); return false;">
+  <div class="card card-pad w-[25rem] max-w-full">
+    <h2 id="confbox-title" class="font-bold text-[16px] tracking-display mb-2">Are you sure?</h2>
+    <div id="confbox-body" class="text-[13px] text-mut leading-relaxed"></div>
+    <div class="flex gap-2 mt-4">
+      <button type="button" class="btn btn-ghost flex-1" onclick="confBoxCancel()">Cancel</button>
+      <button type="submit" id="confbox-go" class="btn btn-pri flex-1">Confirm</button>
+    </div>
+  </div>
+</form>
+
 <!-- Generic "ask for a value" modal. A native prompt() is refused outright by
      some browsers (it throws, taking the whole handler down with it), which is
      no way to record money. -->
@@ -508,7 +522,7 @@ tailwind.config = {
       <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
         <div>
           <h2 class="font-bold text-[17px]">Evidence vault</h2>
-          <p class="text-[13px] text-mut">Audit evidence filed per engagement — stored locally in this browser. Click to view, download any file.</p>
+          <p class="text-[13px] text-mut">Audit evidence filed per engagement, held in the firm’s private encrypted store — not on this device. Everyone on the engagement sees the same files, and links to them expire after 60 seconds. Click to view or download any file.</p>
         </div>
         <div class="flex items-center gap-2">
           <select class="field !w-64" id="vault-cat"></select>
