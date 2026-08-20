@@ -2583,6 +2583,155 @@ async function pwSetSubmit(e) {
   } finally { btn.disabled = false; btn.textContent = 'Set password & continue'; }
   return false;
 }
+/* ---------- Import from Full Set Monster ----------
+   FSM keeps the books; Mr Auditor audits them. Handing that over as a PDF and
+   re-keying the trial balance is the most wasteful hour of a Malaysian audit,
+   and it is also where a transposition error enters a file that then gets
+   signed. So the two systems speak directly.
+
+   FSM sends `fsm.audit.v2`, in which every trial-balance line already carries
+   the Mr Auditor category it belongs to — decided by FSM, which knows each
+   account's type, subtype and normal balance, rather than guessed here from
+   the account's name. Each line states HOW it was placed, and anything FSM
+   could not place is classified here and FLAGGED, never placed quietly. */
+const FSM_DEFAULT_URL = 'https://full-set-monster.onrender.com';
+const FSM_URL_KEY = 'mr-auditor-fsm-url';
+const FSM_ACCEPTED = ['fsm.audit.v1', 'fsm.audit.v2'];
+
+function fsmOpen() {
+  const m = $('fsmimport');
+  let saved = FSM_DEFAULT_URL;
+  try { saved = localStorage.getItem(FSM_URL_KEY) || FSM_DEFAULT_URL; } catch (e) {}
+  $('fsm-url').value = saved;
+  $('fsm-token').value = ''; $('fsm-year').value = '';
+  $('fsm-err').classList.add('hidden'); $('fsm-out').innerHTML = '';
+  m.classList.remove('hidden'); m.classList.add('flex');
+  setTimeout(() => $('fsm-token').focus(), 50);
+}
+function fsmClose() {
+  const m = $('fsmimport'); m.classList.add('hidden'); m.classList.remove('flex');
+}
+
+/* An amount owing BY a director and an amount owing TO one are the same
+   account seen from two sides; only the balance says which. FSM sends the
+   account, Mr Auditor decides the side. */
+function fsmSideFix(cat, net) {
+  if (cat === 'DIRADV' || cat === 'DIROWE') return net >= 0 ? 'DIRADV' : 'DIROWE';
+  if (cat === 'RPTREC' || cat === 'RPTPAY') return net >= 0 ? 'RPTREC' : 'RPTPAY';
+  return cat;
+}
+
+async function fsmImport(e) {
+  e.preventDefault();
+  const err = $('fsm-err'), out = $('fsm-out'), btn = $('fsm-btn');
+  const fail = (m) => { err.textContent = m; err.classList.remove('hidden'); };
+  err.classList.add('hidden'); out.innerHTML = '';
+  const token = $('fsm-token').value.trim();
+  const base = ($('fsm-url').value.trim() || FSM_DEFAULT_URL).replace(/\/+$/, '');
+  const year = $('fsm-year').value.trim();
+  if (!token) { fail('Paste the access code from Full Set Monster.'); return false; }
+  try { localStorage.setItem(FSM_URL_KEY, base); } catch (ex) {}
+
+  btn.disabled = true; btn.textContent = 'Pulling...';
+  try {
+    const url = base + '/api/export/audit' + (year ? '?year=' + encodeURIComponent(year) : '');
+    let res;
+    try {
+      res = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+    } catch (netErr) {
+      throw new Error('Could not reach Full Set Monster. Check that it is running and that the address is right.');
+    }
+    if (res.status === 401) throw new Error('Full Set Monster refused that code. Ask for a fresh one — re-issuing a code retires the old one.');
+    if (!res.ok) throw new Error('Full Set Monster replied ' + res.status + '.');
+    const p = await res.json();
+    if (!p || FSM_ACCEPTED.indexOf(p.format) < 0) {
+      throw new Error('This is not a feed Mr Auditor reads (' + ((p && p.format) || 'no format stated') + ').');
+    }
+    const built = fsmBuild(p);
+    out.innerHTML = built.html;
+    if (built.client) {
+      toast('Imported ' + (built.client.setup.name || 'the company') + ' from Full Set Monster');
+      setTimeout(() => { fsmClose(); show('tb'); }, 1600);
+    }
+  } catch (ex) {
+    fail(ex.message || 'Import failed.');
+  } finally { btn.disabled = false; btn.textContent = 'Pull the books'; }
+  return false;
+}
+
+/* Turns the feed into an engagement, and says in words what it did — an
+   auditor should never be told "imported" and left to discover what landed. */
+function fsmBuild(p) {
+  const lines = (p.trial_balance && p.trial_balance.lines) || [];
+  const co = p.company || {}, per = p.period || {};
+  if (!lines.length) {
+    return { client: null, html: '<div class="p-3 rounded-xl bg-warnbg text-warn text-[12.5px]">' +
+      'Full Set Monster has nothing posted for ' + esc(String(per.financial_year || 'that year')) + ' in ' +
+      esc(co.name || 'that company') + '. Nothing was imported — try the year the books are actually in.</div>' };
+  }
+  const c = newClient(co.name || 'Imported company');
+  c.setup.name = co.name || '';
+  c.setup.regno = co.registration_no || '';
+  c.setup.address = co.address || '';
+  if (per.date_to) c.setup.fye = per.date_to;
+  c.setup.framework = co.is_sme === false ? 'MFRS' : 'MPERS';
+
+  let guessed = 0;
+  c.tb = lines.map(function (l) {
+    const dr = num(l.debit), cr = num(l.credit);
+    let cat = l.mrauditor_category, basis = l.mrauditor_basis || 'none';
+    if (!cat || !CAT[cat]) { cat = classify(l.name, dr, cr); basis = 'guessed'; guessed++; }
+    cat = fsmSideFix(cat, dr - cr);
+    /* FSM sends the comparative as a plain accounting figure — debit-positive,
+       the way a ledger states it. Mr Auditor stores `py` in NATURAL sign
+       (revenue and liabilities positive), because model() multiplies it by the
+       category side on the way in and again on the way out. Converting here,
+       once, is what keeps the comparative balance sheet articulating; sending
+       it already flipped would bake this app's display convention into a wire
+       format that other systems also read. */
+    const side = CAT[cat] ? CAT[cat].side : 1;
+    /* Reuse the screen's existing "verify this one" marker rather than inventing
+       a second kind of warning: a row FSM could not place is exactly the same
+       risk as a row this app had to fall back on. */
+    return { id: nid(), name: l.name || l.code || '', cat: cat, dr: dr, cr: cr,
+             py: num(l.prior_year) * side, src: l.code || '', srcBasis: basis,
+             autoWeak: basis === 'guessed' };
+  });
+
+  /* Provenance. A file that came out of another system must say so on its own
+     face — whoever picks it up in six months cannot be expected to remember. */
+  c.importedFrom = {
+    system: (p.source && p.source.system) || 'Full Set Monster',
+    format: p.format,
+    generatedAt: p.generated_at || '',
+    year: per.financial_year || null,
+    accrual: p.basis ? p.basis.accrual : null,
+    balanced: !!(p.trial_balance && p.trial_balance.balanced),
+    ledgerLines: Array.isArray(p.ledger) ? p.ledger.length : 0,
+    documents: Array.isArray(p.source_documents) ? p.source_documents.length : 0,
+    exceptions: Array.isArray(p.exceptions) ? p.exceptions : [],
+  };
+
+  saveState();
+  render(current); updateTop();
+
+  const totDr = c.tb.reduce(function (s, r) { return s + num(r.dr); }, 0);
+  const totCr = c.tb.reduce(function (s, r) { return s + num(r.cr); }, 0);
+  const balanced = Math.abs(totDr - totCr) < 0.05;
+  const withPY = c.tb.filter(function (r) { return num(r.py) !== 0; }).length;
+  const ex = c.importedFrom.exceptions.length;
+  return { client: c, html: '<div class="p-3 rounded-xl bg-okbg text-ok text-[12.5px] space-y-1">' +
+    '<div class="font-semibold">' + esc(c.setup.name) + ' — FY' + esc(String(per.financial_year || '')) + ' imported</div>' +
+    '<div>' + c.tb.length + ' trial-balance lines, ' + (balanced ? 'and they balance.' : '<strong>and they DO NOT balance.</strong>') + '</div>' +
+    '<div>' + withPY + ' carry a prior-year comparative.</div>' +
+    '<div>' + (guessed
+      ? '<strong>' + guessed + ' account' + (guessed > 1 ? 's' : '') + ' Full Set Monster could not place</strong> — classified here by name, waiting for you on the Trial Balance screen.'
+      : 'Every account was placed from Full Set Monster’s own chart, not guessed from its name.') + '</div>' +
+    (c.importedFrom.accrual === false ? '<div>These are cash-basis books drafted from a bank statement, not accrual books built from invoices.</div>' : '') +
+    (ex ? '<div>' + ex + ' open exception' + (ex > 1 ? 's' : '') + ' came across with the books.</div>' : '') +
+    '</div>' };
+}
+
 /* ---------- Ask for a value ----------
    Replaces prompt(), which some browsers refuse outright — it throws, and the
    handler that called it dies with it. Resolves to null when cancelled, so

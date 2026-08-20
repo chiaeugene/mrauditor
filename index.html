@@ -148,6 +148,34 @@ tailwind.config = {
   </div>
 </form>
 
+<!-- Bring a bookkeeper's finished books straight in from Full Set Monster,
+     already classified, instead of re-keying a trial balance from a PDF. -->
+<form id="fsmimport" class="fixed inset-0 z-[60] hidden items-center justify-center bg-ink/60 backdrop-blur p-4 overflow-y-auto" onsubmit="return fsmImport(event)">
+  <div class="card card-pad w-[30rem] max-w-full my-auto">
+    <h2 class="font-bold text-[17px] tracking-display">Import from Full Set Monster</h2>
+    <p class="text-[12.5px] text-mut mt-1 mb-4">The bookkeeper opens the company in Full Set Monster, opens <strong>Connected apps</strong> and presses <strong>Give Mr Auditor access</strong>. They pass you the code it shows once. One code covers one company.</p>
+    <label class="fieldlbl">Access code</label>
+    <input class="field mono" id="fsm-token" autocomplete="off" placeholder="Paste the code from Full Set Monster">
+    <div class="grid grid-cols-2 gap-3 mt-3">
+      <div>
+        <label class="fieldlbl">Financial year</label>
+        <input class="field mono" id="fsm-year" type="number" placeholder="e.g. 2025">
+      </div>
+      <div>
+        <label class="fieldlbl">Where it lives</label>
+        <input class="field mono !text-[12px]" id="fsm-url" autocomplete="off">
+      </div>
+    </div>
+    <div id="fsm-err" class="text-[12.5px] text-risk mt-3 hidden"></div>
+    <div id="fsm-out" class="mt-3"></div>
+    <div class="flex gap-2 mt-4">
+      <button type="button" class="btn btn-ghost flex-1" onclick="fsmClose()">Cancel</button>
+      <button type="submit" id="fsm-btn" class="btn btn-pri flex-1">Pull the books</button>
+    </div>
+    <p class="text-[11.5px] text-mut mt-3">Nothing is overwritten — this creates a new engagement. The books arrive classified by Full Set Monster, and anything it could not place is flagged for you rather than guessed at quietly.</p>
+  </div>
+</form>
+
 <!-- Generic "ask for a value" modal. A native prompt() is refused outright by
      some browsers (it throws, taking the whole handler down with it), which is
      no way to record money. -->
@@ -318,6 +346,10 @@ tailwind.config = {
           <button class="btn btn-pri !px-6 !text-[15px]" onclick="regOpen()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 10h.01M15 10h.01M9 14h.01M15 14h.01"/></svg>
             Register a company
+          </button>
+          <button class="btn btn-ghost !px-6 !text-[15px]" onclick="fsmOpen()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+            Import from Full Set Monster
           </button>
           <button class="btn btn-ghost !px-6 !text-[15px]" onclick="loadDemo()">See the demo</button>
         </div>
