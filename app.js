@@ -6030,11 +6030,6 @@ async function loadDemo() {
   // drop the initial empty shell if untouched
   DB.clients = DB.clients.filter(c => c.setup.name || c.tb.length);
   const c = Object.assign(BLANK(), { id:nid(), created:Date.now() });
-  // The demo is the first thing a new firm opens, and the reports it prints
-  // must still carry that firm's name and AF number — otherwise the auditor's
-  // very first impression is an auditor's report signed by nobody. newClient()
-  // stamps this, and the demo builds its engagement by hand, so it must too.
-  stampFirmIdentity([c]);
   DB.clients.push(c); DB.activeId = c.id; S = c;
   const fyeYear = new Date().getFullYear() - 1;
   S.setup = { name:'TPO Sdn Bhd', regno:'201901022334 (1329988-P)',
@@ -6106,6 +6101,11 @@ async function loadDemo() {
     fdRate:'2.60%', borrSec:'a first legal charge over the shop-lot premises and the directors’ joint and several guarantee',
     borrRate:'4.75%', hpCurrent:'27500', auditFee:'12000', dirRem:'186000' };
   S.sign = Object.assign(BLANK().sign, { place:'Petaling Jaya', date: dISO(new Date()) });
+  // AFTER the line above, never before it: that assignment replaces the whole
+  // sign object and would wipe the stamp. The demo is the first thing a new
+  // firm opens, and its reports must carry that firm's own name and AF number
+  // — otherwise the auditor's first impression is a report signed by nobody.
+  stampFirmIdentity([S]);
   saveState();
   if (sb && authUser) await cloudPushEngagement(c);
   show('dashboard');
