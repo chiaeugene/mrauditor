@@ -6030,6 +6030,11 @@ async function loadDemo() {
   // drop the initial empty shell if untouched
   DB.clients = DB.clients.filter(c => c.setup.name || c.tb.length);
   const c = Object.assign(BLANK(), { id:nid(), created:Date.now() });
+  // The demo is the first thing a new firm opens, and the reports it prints
+  // must still carry that firm's name and AF number — otherwise the auditor's
+  // very first impression is an auditor's report signed by nobody. newClient()
+  // stamps this, and the demo builds its engagement by hand, so it must too.
+  stampFirmIdentity([c]);
   DB.clients.push(c); DB.activeId = c.id; S = c;
   const fyeYear = new Date().getFullYear() - 1;
   S.setup = { name:'TPO Sdn Bhd', regno:'201901022334 (1329988-P)',
