@@ -190,6 +190,23 @@ tailwind.config = {
   </div>
 </form>
 
+<!-- First sign-in, step two: name your own practice. The platform issues a
+     login; the person who receives it sets up the firm, because its name and
+     AF number print on every report they will sign. -->
+<form id="firmsetup" class="fixed inset-0 z-[60] hidden items-center justify-center bg-ink/60 backdrop-blur p-4" onsubmit="return firmSetupSubmit(event)">
+  <div class="card card-pad w-[27rem] max-w-full">
+    <h2 class="font-bold text-[17px] tracking-display">Set up your firm</h2>
+    <p class="text-[12.5px] text-mut mt-1 mb-4">This is your practice, not your client. The name and AF number below print on every auditor&rsquo;s report you sign, so use them exactly as they are registered.</p>
+    <label class="fieldlbl">Firm name</label>
+    <input class="field" id="fs-name" autocomplete="organization" placeholder="Tan &amp; Co PLT">
+    <label class="fieldlbl mt-3">AF number <span class="text-mut font-normal">(optional now, needed before you sign)</span></label>
+    <input class="field mono" id="fs-af" autocomplete="off" placeholder="AF 002571">
+    <div id="fs-err" class="text-[12.5px] text-risk mt-3 hidden"></div>
+    <button id="fs-btn" type="submit" class="btn btn-pri w-full mt-4 !text-[15px]">Set up the firm</button>
+    <p class="text-[11.5px] text-mut mt-3">You can add your colleagues afterwards under Firm &amp; Users, and register your first client company from the home screen.</p>
+  </div>
+</form>
+
 <!-- Generic "ask for a value" modal. A native prompt() is refused outright by
      some browsers (it throws, taking the whole handler down with it), which is
      no way to record money. -->

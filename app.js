@@ -2565,6 +2565,18 @@ async function adminCall(action, payload) {
    app stays behind it until then — a temporary password handed over by an
    administrator must not survive the first session. */
 let _pwResolve = null;
+/* Nobody is forced to change a handed-over password any more, so this is the
+   only way one ever gets changed. Reuses the same modal as the old forced
+   step, resolved through a different submit path. */
+let _ownPwMode = false;
+async function changeOwnPassword() {
+  _ownPwMode = true;
+  $('pwset-sub').textContent = 'Choose a new password for your own login. Nobody else can see it — not your administrator, not us.';
+  await forcePasswordChange();
+  _ownPwMode = false;
+  $('pwset-sub').textContent = 'Your administrator issued you a temporary password. Set your own to continue.';
+}
+
 function forcePasswordChange() {
   return new Promise((resolve) => {
     _pwResolve = resolve;
@@ -2583,9 +2595,13 @@ async function pwSetSubmit(e) {
   if (a !== b) return fail('Those two do not match.'), false;
   btn.disabled = true; btn.textContent = 'Setting…';
   try {
-    const { error } = await sb.auth.updateUser({ password: a });
-    if (error) throw new Error(error.message);
-    await sb.from('app_users').update({ must_change_password: false }).eq('id', authUser.id);
+    if (_ownPwMode) {
+      await adminCall('change_own_password', { password: a });
+    } else {
+      const { error } = await sb.auth.updateUser({ password: a });
+      if (error) throw new Error(error.message);
+      await sb.from('app_users').update({ must_change_password: false }).eq('id', authUser.id);
+    }
     if (firmProfile) firmProfile.must_change_password = false;
     logActivityFirm('Set own password at first sign-in');
     const m = $('pwset'); m.classList.add('hidden'); m.classList.remove('flex');
@@ -3017,6 +3033,46 @@ function _askClose(val) {
 function askBoxSubmit(e) { e.preventDefault(); _askClose({ value: $('askbox-a').value, note: $('askbox-b').value }); return false; }
 function askBoxCancel() { _askClose(null); }
 
+/* ---------- First sign-in: set up your firm ----------
+   The platform issues a LOGIN, not a firm. The person who receives it names
+   their own practice — which is the right way round, because the firm's name
+   and AF number print on every report they will ever sign, and they are the
+   one who knows them.
+
+   Blocking on purpose, and after the password step: a login with no firm can
+   see nothing and do nothing, so letting it through to an empty app would be
+   the confusing dead end this replaces. */
+let _firmResolve = null;
+function forceFirmSetup() {
+  return new Promise((resolve) => {
+    _firmResolve = resolve;
+    const m = $('firmsetup');
+    $('fs-name').value = ''; $('fs-af').value = '';
+    $('fs-err').classList.add('hidden');
+    m.classList.remove('hidden'); m.classList.add('flex');
+    setTimeout(() => $('fs-name').focus(), 50);
+  });
+}
+async function firmSetupSubmit(e) {
+  e.preventDefault();
+  const name = $('fs-name').value.trim(), af = $('fs-af').value.trim();
+  const err = $('fs-err'), btn = $('fs-btn');
+  const fail = (m) => { err.textContent = m; err.classList.remove('hidden'); };
+  if (name.length < 2) { fail('Enter your firm’s registered name.'); return false; }
+  btn.disabled = true; btn.textContent = 'Setting up…';
+  try {
+    const r = await adminCall('setup_firm', { firm_name: name, af_no: af });
+    await loadFirmProfile();
+    const m = $('firmsetup'); m.classList.add('hidden'); m.classList.remove('flex');
+    logActivityFirm('Set up the firm', `${r.firm_name}${r.af_no ? ' · ' + r.af_no : ''}`);
+    toast(`${r.firm_name} is set up — welcome`);
+    if (_firmResolve) { _firmResolve(); _firmResolve = null; }
+  } catch (ex) {
+    fail(ex.message || 'Could not set up the firm — try again.');
+  } finally { btn.disabled = false; btn.textContent = 'Set up the firm'; }
+  return false;
+}
+
 /* ---------- Credentials to hand over ----------
    A generated password is shown exactly once. Creating a login also refreshes
    the list it appears in, and that re-render used to wipe the very thing the
@@ -3089,6 +3145,7 @@ async function renderFirm() {
       <div class="flex items-center justify-between mb-1">
         <h2 class="font-bold text-[15px]">${esc((firmRecord && firmRecord.name) || 'Your firm')}</h2>
         <span class="pill ${ROLE_PILLS[firmRole()] || 'pill-mut'}">you: ${firmRole()}</span>
+        <button class="btn btn-ghost !py-1 !px-2 !text-[11.5px]" onclick="changeOwnPassword()">Change my password</button>
       </div>
       <p class="text-[12.5px] text-mut mb-3">${firmRecord && firmRecord.af_no ? esc(firmRecord.af_no) + ' · ' : ''}${users.length} login(s). Everyone here can open every engagement belonging to the firm; review-locking still applies per working paper.</p>
       <table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
@@ -3113,6 +3170,7 @@ async function renderFirm() {
           <div><label class="fieldlbl">Role</label><select class="field !w-28" id="fu-role">
             <option value="staff">staff</option><option value="manager">manager</option>
             <option value="partner">partner</option><option value="admin">admin</option></select></div>
+          <div class="flex-1 min-w-[150px]"><label class="fieldlbl">Password <span class="text-mut font-normal">(blank = generated)</span></label><input class="field mono" id="fu-pw" autocomplete="off" placeholder="leave blank"></div>
           <button class="btn btn-pri" onclick="firmCreateUser()">Create login</button>
         </div>
         <div id="fu-result" class="mt-2"></div>
@@ -3137,11 +3195,11 @@ async function firmCreateUser() {
   const box = $('fu-result');
   box.innerHTML = '<span class="text-[12.5px] text-mut">Creating…</span>';
   try {
-    const r = await adminCall('create', { email, name, role });
+    const r = await adminCall('create', { email, name, role, password: ($('fu-pw') ? $('fu-pw').value.trim() : '') || undefined });
     logActivityFirm('Created a login', `${email} as ${role}`);
     credShow('Login created — hand these over', r.email, r.password,
-      'They must choose their own password at first sign-in. This is the only time it is shown.');
-    $('fu-email').value = ''; $('fu-name').value = '';
+      'This password works as-is. They can change it themselves under Firm & Users. Shown once, so copy it now.');
+    $('fu-email').value = ''; $('fu-name').value = ''; if ($('fu-pw')) $('fu-pw').value = '';
     renderFirm();
   } catch (e) { box.innerHTML = `<div class="text-[12.5px] text-risk">${esc(e.message)}</div>`; }
 }
@@ -3177,6 +3235,16 @@ async function renderAgency() {
     const { data: tiers } = await sb.from('commission_tiers').select('*').order('min_clients');
     const { data: pouts } = await sb.from('agency_payouts').select('*').order('paid_on', { ascending: false }).limit(100);
     const { data: agentRows } = await sb.from('app_users').select('id,email,name').eq('role', 'agent').order('name');
+    /* The only way the platform sees a firm's companies now: round 8 removed
+       its blanket read over engagements, so this carries names and year ends
+       and nothing else. */
+    let dirOf = {}, awaiting = [], dirLoaded = false;
+    try {
+      const dir = await adminCall('directory', {});
+      for (const f of dir.firms || []) dirOf[f.id] = f.companies || [];
+      awaiting = dir.awaitingSetup || [];
+      dirLoaded = true;
+    } catch (e) { console.warn('directory unavailable:', e.message); }
     const list = firms || [], payments = pays || [], payouts = pouts || [], agents = agentRows || [];
     const activeCount = list.filter(f => f.active).length;
     const mrr = list.filter(f => f.active).reduce((s, f) => s + Number(f.monthly_price || 0), 0);
@@ -3192,20 +3260,32 @@ async function renderAgency() {
     </div>
     ${isPlatform() ? `
     <div class="card card-pad mb-4">
-      <div class="font-semibold text-[14px] mb-2">Sell Mr Auditor to a firm</div>
+      <div class="font-semibold text-[14px] mb-1">Issue a login</div>
+      <p class="text-[12px] text-mut mb-2.5">Step one of three. You create the person; they name their own firm on first sign-in; the firm registers its own client companies.</p>
       <div class="flex flex-wrap gap-2 items-end">
-        <div class="flex-1 min-w-[170px]"><label class="fieldlbl">Firm name</label><input class="field" id="ag-firm" placeholder="Wong &amp; Partners PLT"></div>
-        <div><label class="fieldlbl">AF no.</label><input class="field mono !w-28" id="ag-af" placeholder="AF 003311"></div>
-        <div class="flex-1 min-w-[170px]"><label class="fieldlbl">Administrator email</label><input class="field" id="ag-email" type="email" placeholder="admin@firm.my"></div>
-        <div class="flex-1 min-w-[130px]"><label class="fieldlbl">Their name</label><input class="field" id="ag-name" placeholder="Full name"></div>
+        <div class="flex-1 min-w-[200px]"><label class="fieldlbl">Their email</label><input class="field" id="ag-email" type="email" placeholder="wong@wongpartners.my"></div>
+        <div class="flex-1 min-w-[160px]"><label class="fieldlbl">Their name</label><input class="field" id="ag-name" placeholder="Wong Mei Yee"></div>
         <div><label class="fieldlbl">RM / month</label><input class="field mono !w-24" id="ag-price" type="number" value="599"></div>
-        <div><label class="fieldlbl">Sold by</label><select class="field !w-36" id="ag-agent">
-          <option value="">direct (no agent)</option>
-          ${agents.map(a => `<option value="${a.id}">${esc(a.name || a.email)}</option>`).join('')}</select></div>
-        <button class="btn btn-pri" onclick="agencyCreateFirm()">Create firm</button>
+        <div class="flex-1 min-w-[150px]"><label class="fieldlbl">Password <span class="text-mut font-normal">(blank = generated)</span></label><input class="field mono" id="ag-pw" autocomplete="off" placeholder="leave blank"></div>
+        <button class="btn btn-pri" onclick="agencyCreateLogin()">Create login</button>
       </div>
       <div id="ag-firm-result" class="mt-2"></div>
-      <p class="text-[11.5px] text-mut mt-2">Creates the firm and its administrator login, and shows the password once to hand over. They set their own password at first sign-in and create their own staff.</p>
+      <p class="text-[11.5px] text-mut mt-2">Shows the password once, to hand over. They replace it at first sign-in, then set up their firm.</p>
+    </div>
+    <div class="card card-pad mb-4">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="font-bold text-[15px]">Waiting to set up their firm</h2>
+        <span class="text-[11.5px] text-mut">Issued a login, not yet signed in and named their practice.</span>
+      </div>
+      ${awaiting.length ? `<table class="tbl"><thead><tr><th>Person</th><th>Email</th><th class="num">Agreed</th><th>Issued</th><th></th></tr></thead>
+      <tbody>${awaiting.map(u => `<tr>
+        <td class="text-[12.5px] font-medium">${esc(u.name || '—')}</td>
+        <td class="text-[12.5px] text-mut mono">${esc(u.email)}</td>
+        <td class="num mono">${u.pending_monthly_price ? fmtRM(u.pending_monthly_price) : '—'}</td>
+        <td class="text-[12.5px] text-mut">${u.created_at ? dMY(u.created_at.slice(0,10)) : '—'}</td>
+        <td class="text-right"><button class="btn btn-ghost !py-0.5 !px-1.5 !text-[11px]" onclick="agencyResendPassword('${u.id}','${esc(u.email)}')">New password</button></td>
+      </tr>`).join('')}</tbody></table>`
+      : '<p class="text-[12.5px] text-mut">Everyone you have issued a login to has set up their firm.</p>'}
     </div>` : ''}
     <div class="card card-pad mb-4">
       <div class="flex items-center justify-between mb-2">
@@ -3225,8 +3305,14 @@ async function renderAgency() {
           <button class="btn btn-ghost !py-0.5 !px-1.5 !text-[11px]" onclick="agencyRecordPayment('${f.id}','${esc(f.name).replace(/'/g,"\\'")}',${f.monthly_price || 0})">Record payment</button>
           <button class="btn btn-ghost !py-0.5 !px-1.5 !text-[11px]" onclick="agencySetActive('${f.id}', ${!f.active})">${f.active ? 'Suspend' : 'Reactivate'}</button>
         </td>` : ''}
-      </tr>`).join('')}</tbody></table>`
-      : '<p class="text-[12.5px] text-mut">No firms yet — create one above, or provision one from Elaine.</p>'}
+      </tr>
+      <tr><td colspan="${isPlatform() ? 6 : 5}" class="!pt-0 !pb-3">
+        ${(dirOf[f.id] || []).length ? `<div class="flex flex-wrap gap-1.5 pl-3">
+          ${(dirOf[f.id] || []).map(c => `<span class="pill pill-mut !text-[11px]">${esc(c.name || '(unnamed)')}${c.fye ? ' · FYE ' + dMY(c.fye) : ''}</span>`).join('')}
+        </div>` : `<div class="text-[11.5px] text-mut pl-3">${dirLoaded ? 'No client companies registered yet.' : ''}</div>`}
+      </td></tr>`).join('')}</tbody></table>
+      <p class="text-[11.5px] text-mut mt-2">Client company names and year ends only — the audit files themselves belong to the firm, and the platform cannot open them.</p>`
+      : '<p class="text-[12.5px] text-mut">No firms yet. Issue a login above; the firm appears once that person sets it up.</p>'}
     </div>
     ${isPlatform() ? `
     <div class="card card-pad mb-4">
@@ -3269,6 +3355,37 @@ async function renderAgency() {
 }
 
 /* ---------- agency console actions (platform only) ---------- */
+/* Step one of the chain is a PERSON, not a firm. They name their own practice
+   on first sign-in, because its registered name and AF number print on every
+   report they will sign — those are theirs to enter, not ours to guess. */
+async function agencyCreateLogin() {
+  const box = $('ag-firm-result');
+  const email = $('ag-email').value.trim();
+  if (!email) { toast('Enter their email address'); return; }
+  box.innerHTML = '<span class="text-[12.5px] text-mut">Creating…</span>';
+  try {
+    const r = await adminCall('create_login', { email,
+      name: $('ag-name').value.trim(), monthly_price: num($('ag-price').value),
+      password: $('ag-pw').value.trim() || undefined });
+    credShow('Login created — hand these over', r.email, r.password,
+      'This password works as-is — they are not asked to change it. They set up their own firm at first sign-in.');
+    $('ag-email').value = ''; $('ag-name').value = ''; $('ag-pw').value = '';
+    box.innerHTML = '';
+    logActivityFirm('Issued a login', r.email + ' at ' + fmtRM(r.monthly_price) + '/mo');
+    renderAgency();
+  } catch (e) { box.innerHTML = '<div class="text-[12.5px] text-risk">' + esc(e.message) + '</div>'; }
+}
+async function agencyResendPassword(userId, email) {
+  if (!await askConfirm('Issue a new password for ' + email + '? The one you sent them stops working immediately.',
+      { title:'New password', confirmLabel:'Issue it' })) return;
+  try {
+    const r = await adminCall('reset_password', { user_id: userId });
+    credShow('New password — hand it over', r.email, r.password,
+      'Their previous password no longer works. They set up their firm after signing in.');
+    renderAgency();
+  } catch (e) { toast(e.message); }
+}
+
 async function agencyCreateFirm() {
   const box = $('ag-firm-result');
   const firm_name = $('ag-firm').value.trim(), email = $('ag-email').value.trim();
@@ -6558,6 +6675,13 @@ async function afterAuth() {
   document.querySelectorAll('#mobile-nav [data-scr="firm"]').forEach(n => n.classList.toggle('hidden', !firmProfile));
   document.querySelectorAll('#mobile-nav [data-scr="agency"]').forEach(n => n.classList.toggle('hidden', !(isPlatform() || isAgent())));
   if (firmProfile && firmProfile.must_change_password) await forcePasswordChange();
+  /* A login with no firm has not set one up yet. That is a legitimate step in
+     the new order — person first, then firm, then companies — not the dead end
+     it used to be, so ask for the firm instead of letting them into an empty
+     app. Platform and agent logins never own a firm and skip this. */
+  if (firmProfile && !firmProfile.firm_id && !isPlatform() && !isAgent()) {
+    await forceFirmSetup();
+  }
   // cloud is the source of truth — no localStorage auto-migration (it would resurrect
   // deliberately deleted engagements from a stale browser cache)
   let cloud = await cloudLoadEngagements();

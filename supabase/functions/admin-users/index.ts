@@ -102,7 +102,9 @@ Deno.serve(async (req) => {
       }
       const { error: pErr } = await admin.from("app_users").insert({
         id: created.user!.id, firm_id: targetFirm, email, name, role,
-        active: true, must_change_password: true,
+        active: true, // The password handed over is the password used — no forced reset on a
+        // login someone deliberately created and passed on.
+        must_change_password: false,
       });
       if (pErr) {
         // Never leave an auth user without a profile — it would be a login
@@ -152,6 +154,113 @@ Deno.serve(async (req) => {
     // Everything below is super_admin only. These are the same operations
     // Elaine's console performs, exposed here so Mr Auditor can be sold and
     // administered on its own without depending on another product.
+
+    // ── User → Firm → Companies ──────────────────────────────────────────────
+    // The platform creates a PERSON. That person sets up their own firm on
+    // first sign-in, and the firm keeps its own companies. The firm no longer
+    // exists before the human who runs it.
+
+    if (action === "create_login") {
+      if (!isPlatform) return json({ error: "Platform only" }, 403);
+      const email = String(body.email ?? "").trim().toLowerCase();
+      const name = String(body.name ?? "").trim() || "Firm administrator";
+      const price = Number(body.monthly_price ?? 0) || 0;
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+        return json({ error: "Enter a valid email address" }, 400);
+      }
+      const { data: clash } = await admin.from("app_users").select("id").eq("email", email).maybeSingle();
+      if (clash) return json({ error: "That email already has a login" }, 400);
+
+      const password = String(body.password ?? "").trim() || tempPassword();
+      const { data: created, error: cErr } = await admin.auth.admin.createUser({
+        email, password, email_confirm: true, user_metadata: { name },
+      });
+      if (cErr) {
+        return json({ error: /registered|exists/i.test(cErr.message) ? "That email already has a login" : cErr.message }, 400);
+      }
+      // firm_id stays NULL on purpose: this person has not set up their firm
+      // yet. The agreed price is parked on the login until there is a firm to
+      // carry it, so what was quoted is never lost between the two steps.
+      const { error: pErr } = await admin.from("app_users").insert({
+        id: created.user!.id, firm_id: null, email, name,
+        // The password the platform sets is the password they use. No forced
+        // reset: this is a login handed over deliberately, not a recovery.
+        // They can change it themselves under Firm & Users whenever they like.
+        role: "admin", active: true, must_change_password: false,
+        pending_monthly_price: price,
+      });
+      if (pErr) {
+        await admin.auth.admin.deleteUser(created.user!.id);
+        throw new Error(pErr.message);
+      }
+      return json({ ok: true, email, password, monthly_price: price });
+    }
+
+    if (action === "change_own_password") {
+      const pw = String(body.password ?? "");
+      if (pw.length < 8) return json({ error: "Use at least 8 characters" }, 400);
+      const { error } = await admin.auth.admin.updateUserById(me.id, { password: pw });
+      if (error) throw new Error(error.message);
+      await admin.from("app_users").update({ must_change_password: false }).eq("id", me.id);
+      return json({ ok: true });
+    }
+
+    if (action === "setup_firm") {
+      // Called by the person themselves, on first sign-in — not by the
+      // platform. Allowed exactly once: whoever already has a firm cannot use
+      // this to mint another, and cannot move themselves into someone else's.
+      if (me.firm_id) return json({ error: "You already belong to a firm" }, 400);
+      if (me.role === "super_admin" || me.role === "agent") {
+        return json({ error: "A platform or agent login does not set up a firm" }, 400);
+      }
+      const firmName = String(body.firm_name ?? "").trim();
+      const afNo = String(body.af_no ?? "").trim() || null;
+      if (firmName.length < 2) return json({ error: "Enter your firm's registered name" }, 400);
+
+      const { data: firm, error: fErr } = await admin.from("firms").insert({
+        name: firmName, af_no: afNo,
+        monthly_price: Number(me.pending_monthly_price ?? 0) || 0,
+        subscription_started_on: new Date().toISOString().slice(0, 10),
+        active: true,
+      }).select().single();
+      if (fErr) throw new Error(fErr.message);
+
+      const { error: uErr } = await admin.from("app_users")
+        .update({ firm_id: firm.id }).eq("id", me.id);
+      if (uErr) {
+        await admin.from("firms").delete().eq("id", firm.id);  // never strand an empty firm
+        throw new Error(uErr.message);
+      }
+      return json({ ok: true, firm_id: firm.id, firm_name: firm.name, af_no: firm.af_no });
+    }
+
+    if (action === "directory") {
+      // The estate as the platform is allowed to see it: firms, their logins,
+      // and the NAMES and year ends of their companies. No engagement data —
+      // that grant was removed from can_access_engagement in round 8.
+      if (!isPlatform && me.role !== "agent") return json({ error: "Platform only" }, 403);
+      const asUserDb = createClient(url, anon, { global: { headers: { Authorization: authHeader } } });
+      const { data: rows, error } = await asUserDb.rpc("firm_directory");
+      if (error) throw new Error(error.message);
+
+      const firms: Record<string, unknown> = {};
+      for (const r of (rows ?? []) as Record<string, string | number | boolean | null>[]) {
+        const id = String(r.firm_id);
+        const f = (firms[id] ??= {
+          id, name: r.firm_name, af_no: r.af_no, active: r.active,
+          monthly_price: r.monthly_price, logins: r.logins, companies: [],
+        }) as { companies: unknown[] };
+        if (r.engagement_id) {
+          f.companies.push({ id: r.engagement_id, name: r.engagement_name, fye: r.fye, updated_at: r.updated_at });
+        }
+      }
+      // People with no firm yet belong in the same picture — that is the whole
+      // point of the new order, and they would otherwise be invisible.
+      const { data: pending } = await admin.from("app_users")
+        .select("id,email,name,created_at,pending_monthly_price")
+        .is("firm_id", null).eq("role", "admin").order("created_at");
+      return json({ firms: Object.values(firms), awaitingSetup: pending ?? [] });
+    }
 
     if (action === "create_firm") {
       if (!isPlatform) return json({ error: "Platform only" }, 403);
