@@ -256,46 +256,6 @@ Deno.serve(async (req) => {
       return json({ firms: Object.values(firms), awaitingSetup: pending ?? [] });
     }
 
-    if (action === "create_firm") {
-      if (!isPlatform) return json({ error: "Platform only" }, 403);
-      const firmName = String(body.firm_name ?? "").trim();
-      const email = String(body.email ?? "").trim().toLowerCase();
-      const name = String(body.name ?? "").trim() || "Firm administrator";
-      const afNo = String(body.af_no ?? "").trim() || null;
-      const monthlyPrice = Number(body.monthly_price ?? 0) || 0;
-      const agentId = String(body.agent_id ?? "").trim() || null;
-      if (!firmName || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-        return json({ error: "A firm name and a valid administrator email are required" }, 400);
-      }
-      const { data: clash } = await admin.from("app_users").select("id").eq("email", email).maybeSingle();
-      if (clash) return json({ error: "That email already has a login" }, 400);
-
-      const { data: firm, error: fErr } = await admin.from("firms").insert({
-        name: firmName, af_no: afNo, monthly_price: monthlyPrice, agent_id: agentId,
-        subscription_started_on: new Date().toISOString().slice(0, 10),
-      }).select().single();
-      if (fErr) throw new Error(fErr.message);
-
-      const password = String(body.password ?? "").trim() || tempPassword();
-      const { data: created, error: cErr } = await admin.auth.admin.createUser({
-        email, password, email_confirm: true, user_metadata: { name },
-      });
-      if (cErr) {
-        await admin.from("firms").delete().eq("id", firm.id);   // never strand an empty firm
-        return json({ error: cErr.message }, 400);
-      }
-      const { error: pErr } = await admin.from("app_users").insert({
-        id: created.user!.id, firm_id: firm.id, email, name,
-        role: "admin", active: true, must_change_password: true,
-      });
-      if (pErr) {
-        await admin.auth.admin.deleteUser(created.user!.id);
-        await admin.from("firms").delete().eq("id", firm.id);
-        throw new Error(pErr.message);
-      }
-      return json({ ok: true, firm_id: firm.id, firm_name: firm.name, email, password });
-    }
-
     if (action === "create_agent") {
       if (!isPlatform) return json({ error: "Platform only" }, 403);
       const email = String(body.email ?? "").trim().toLowerCase();
@@ -310,7 +270,7 @@ Deno.serve(async (req) => {
       // platform user who created them.
       const { error: pErr } = await admin.from("app_users").insert({
         id: created.user!.id, firm_id: null, email, name,
-        role: "agent", active: true, must_change_password: true, parent_id: me.id,
+        role: "agent", active: true, must_change_password: false, parent_id: me.id,
       });
       if (pErr) { await admin.auth.admin.deleteUser(created.user!.id); throw new Error(pErr.message); }
       return json({ ok: true, email, password });
