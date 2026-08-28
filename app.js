@@ -241,6 +241,12 @@ const RULES = [
   // stronger signal than any expense keyword ("Office, warehouse racking &
   // forklifts - cost" was expensed via the 'office' keyword before this)
   [/(-|—)\s*cost\s*$|\(cost\)\s*$|at cost\s*$/i,'PPE'],
+  // An asset NOUN followed by a running-cost word is the cost of USING the
+  // asset, not the asset: "Motor vehicle running expenses", "Machinery hire",
+  // "Equipment rental". It sits above the PPE rule because the asset word
+  // would otherwise win and capitalise an expense - the one error class that
+  // does not unbalance anything, so it surfaces nowhere else.
+  [/(motor vehicle|vehicle|lorr(y|ies)|truck|machiner|equipment|plant|forklift|building|premises|office)[^,]{0,24}\b(running|expenses?|upkeep|hire|rental|charges|servicing|insurance|licence|license)\b/i,'ADMIN'],
   [/motor vehicle|\bplants?\b|machiner|equipment|furniture|fitting|renovation|forklift|racking|computer(?!.*(expense|repair))|land|building|premises|signboard|air.?cond/i,'PPE'],
   [/inventor|stock(?! ?broker)|closing stock|finished goods|raw material|work.?in.?progress/i,'INV'],
   [/trade receivable|trade debtor|debtors?\b|account receivable/i,'TR'],
@@ -295,6 +301,11 @@ const CLASSIFY_TESTS = [
   ['Tenants deposits received',0,100,'OP'],['Utility deposits',100,0,'OR'],['Rental receivables',100,0,'OR'],
   ['Retention sum receivable',100,0,'TR'],['Retention sum payable',0,100,'TP'],['Trade receivables',100,0,'TR'],
   ['Plant & machinery - cost',100,0,'PPE'],['Freehold land & buildings - cost',100,0,'PPE'],
+  // running costs of an asset are an expense, not the asset (caught live when
+  // an extracted trial balance capitalised "Motor vehicle running expenses")
+  ['Motor vehicle running expenses',100,0,'ADMIN'],['Motor vehicle expenses',100,0,'ADMIN'],
+  ['Machinery hire',100,0,'ADMIN'],['Equipment rental',100,0,'ADMIN'],
+  ['Lorry running expenses',100,0,'ADMIN'],['Vehicle insurance',100,0,'ADMIN'],
   ['Kitchen equipment & renovation - cost',100,0,'PPE'],
   ['Inventories - trading stock',100,0,'INV'],['Inventories - spares & tyres',100,0,'INV'],
   ['Work-in-progress - contracts',100,0,'INV'],['Amount owing by director',100,0,'DIRADV'],
@@ -2585,6 +2596,194 @@ async function pwSetSubmit(e) {
   } finally { btn.disabled = false; btn.textContent = 'Set password & continue'; }
   return false;
 }
+/* ============================================================
+   Document intelligence — the front door
+   ============================================================
+   Three things an auditor actually does with a pile of client documents:
+   file them, get a trial balance out of them, and pick what to test. Until now
+   Mr Auditor could only help with the first, and only after the auditor had
+   already decided where each document belonged.
+   ============================================================ */
+
+const AI_FILING_CHOICE = 'Let Mr Auditor read it and file it';
+
+/* ---------- 1. File a document by reading it ----------
+   The auditor still owns the decision — this only runs when they explicitly
+   pick "Let Mr Auditor read it and file it", and the row is marked so nobody
+   later mistakes a machine's filing for a professional judgement. */
+async function vaultAutoFile(fileId, fileName) {
+  const cats = DOCCATS.filter(c => c !== 'Others');
+  const r = await aiRequestDocs(
+    `Which single evidence category does this document belong in?\n\n` +
+    `Choose EXACTLY ONE from this list, copied verbatim:\n${cats.map(c => '- ' + c).join('\n')}\n` +
+    `- Others\n\n` +
+    `Read the document before deciding. If it genuinely fits none of them, answer "Others".\n` +
+    `Reply with ONLY a JSON object, no commentary: {"category":"<exact text from the list>","why":"<one short sentence>"}`,
+    [fileId]);
+  const m = (r.answer || '').match(/\{[\s\S]*\}/);
+  if (!m) throw new Error('could not read the document');
+  const parsed = JSON.parse(m[0]);
+  const chosen = DOCCATS.find(c => c.toLowerCase() === String(parsed.category || '').trim().toLowerCase());
+  if (!chosen) throw new Error('the answer was not one of the categories');
+  const { error } = await sb.from('evidence_files')
+    .update({ category: chosen, category_source: 'ai' }).eq('id', fileId);
+  if (error) throw new Error(error.message);
+  return { category: chosen, why: parsed.why || '' };
+}
+
+/* ---------- 2. Build a trial balance out of documents ----------
+   The single biggest gap: everything downstream — findings, statements, tax,
+   the reports — hangs off the trial balance, and until now that had to arrive
+   as a spreadsheet somebody had already prepared. A client who sends a PDF
+   trial balance, or a set of management accounts, could not start.
+
+   Deliberately NOT a bookkeeping engine: this reads a trial balance or set of
+   accounts that already exists in a document and turns it into rows. It does
+   not post transactions or invent double entry. If the documents do not carry
+   a trial balance, it says so rather than assembling one from fragments. */
+async function tbBuildFromDocs() {
+  if (guardArchived()) return;
+  const box = $('tb-frombox');
+  const files = await vaultListRows(S.id);
+  const wanted = files.filter(f =>
+    f.category === 'Trial balance & management accounts' ||
+    f.category === 'Prior-year FS & working papers');
+  if (!wanted.length) {
+    box.innerHTML = `<div class="p-3 rounded-xl bg-warnbg text-warn text-[12.5px]">
+      Nothing to read. File the client's trial balance or management accounts in the
+      Evidence Vault first, under <strong>Trial balance &amp; management accounts</strong>.
+      PDF, Excel, Word, a photograph of a printout — any of those.</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="p-3 rounded-xl border border-indigo/30 bg-white text-[12.5px] flex items-center gap-2">
+    <span class="pill pill-info">Mr Auditor AI</span>
+    <span class="text-mut">reading ${wanted.length} document(s) in full — this takes up to a minute…</span></div>`;
+  try {
+    const r = await aiRequestDocs(
+`Extract the TRIAL BALANCE from the attached document(s) for ${S.setup.name || 'this company'}${S.setup.fye ? ', financial year ended ' + dMY(S.setup.fye) : ''}.
+
+Rules:
+- Return EVERY account line. Do not summarise, group or omit anything, however small.
+- Use the account name exactly as written in the document.
+- "dr" and "cr" are the CURRENT year closing balance. Put the figure on the side the document puts it on; never both.
+- "py" is the prior-year comparative for that same account as a single signed number, debit positive, or 0 if the document has no comparative column.
+- Amounts as plain numbers: no commas, no currency, no brackets. A bracketed figure is negative.
+- If the document shows a profit or loss line, a "total" line, or a sub-total, SKIP it — those are derived, not accounts.
+- If the attached documents do not actually contain a trial balance or a set of accounts, return {"found":false,"why":"<what they are instead>"} and nothing else.
+
+Reply with ONLY JSON, no commentary:
+{"found":true,"source":"<which document you took it from>","rows":[{"name":"Cash at bank","dr":12345.67,"cr":0,"py":10000}]}`,
+      wanted.map(f => f.id), 16000);
+
+    const m = (r.answer || '').match(/\{[\s\S]*\}/);
+    if (!m) throw new Error('the AI did not return a readable extraction');
+    const out = JSON.parse(m[0]);
+    if (out.found === false) {
+      box.innerHTML = `<div class="p-3 rounded-xl bg-warnbg text-warn text-[12.5px]">
+        No trial balance in those documents — ${esc(out.why || 'they do not contain a set of accounts')}.
+        File the client's trial balance and try again.</div>`;
+      return;
+    }
+    const rows = Array.isArray(out.rows) ? out.rows : [];
+    if (!rows.length) throw new Error('no account lines came back');
+
+    tbPending = rows.map(x => {
+      const dr = num(x.dr), cr = num(x.cr), name = String(x.name || '').trim();
+      const cat = classify(name, dr, cr);
+      /* The AI is asked for the comparative debit-positive, because that is the
+         unambiguous accounting convention to instruct in. Mr Auditor stores it
+         in NATURAL sign — model() multiplies py by the category side on the way
+         in and again on the way out — so it is converted here, exactly as the
+         Full Set Monster import does. Skipping this makes every prior-year
+         balance sheet fail to articulate. */
+      const side = CAT[cat] ? CAT[cat].side : 1;
+      return { id: nid(), name, cat, dr: dr || '', cr: cr || '',
+               py: num(x.py) * side || '', autoWeak: !RULES.some(([re]) => re.test(name)) };
+    }).filter(r => r.name && (num(r.dr) || num(r.cr) || num(r.py)));
+
+    const t = tbPending.reduce((a, r) => ({ dr: a.dr + num(r.dr), cr: a.cr + num(r.cr) }), { dr: 0, cr: 0 });
+    const diff = t.dr - t.cr;
+    const weak = tbPending.filter(r => r.autoWeak).length;
+    const skippedNote = (r.skipped || []).length
+      ? `<div class="text-warn mt-1">Not read: ${r.skipped.map(s => esc(s.name) + ' (' + esc(s.reason) + ')').join('; ')}</div>` : '';
+
+    box.innerHTML = `<div class="p-3 rounded-xl ${Math.abs(diff) < 0.05 ? 'bg-okbg text-ok' : 'bg-warnbg text-warn'} text-[12.5px]">
+      <div class="font-semibold mb-1">${tbPending.length} accounts read from ${esc(out.source || (wanted.length + ' document(s)'))}</div>
+      <div>Debits ${fmtRM(t.dr)} · Credits ${fmtRM(t.cr)} —
+        ${Math.abs(diff) < 0.05 ? 'they balance.' : `<strong>out by ${fmtRM(Math.abs(diff))}.</strong> Check the extraction against the document before you accept it.`}</div>
+      <div>${weak ? `${weak} account${weak > 1 ? 's' : ''} could not be classified from the name and ${weak > 1 ? 'are' : 'is'} flagged for you.` : 'Every account was classified.'}</div>
+      ${skippedNote}
+      <div class="text-[11.5px] mt-1.5">This is an extraction, not a source document. Agree it to the client's own trial balance before you rely on it.</div>
+      <div class="flex gap-2 mt-2.5">
+        <button class="btn btn-mint !py-1 !text-[12px]" onclick="tbAcceptPending()">
+          ${S.tb.length ? 'Replace the ' + S.tb.length + ' rows already here' : 'Put these ' + tbPending.length + ' rows in'}</button>
+        <button class="btn btn-ghost !py-1 !text-[12px]" onclick="tbDiscardPending()">Discard</button>
+      </div></div>`;
+  } catch (e) {
+    box.innerHTML = `<div class="p-3 rounded-xl bg-warnbg text-warn text-[12.5px]">Could not extract: ${esc(e.message || 'unknown error')}</div>`;
+  }
+}
+let tbPending = null;
+function tbAcceptPending() {
+  if (!tbPending || !tbPending.length) return;
+  const n = tbPending.length;
+  S.tb = tbPending; S.adjustments = []; S.findingStatus = {};
+  tbPending = null;
+  saveState(); renderTB(); updateTop();
+  logActivity('Built the trial balance from documents', `${n} account(s) extracted by AI from filed evidence`);
+  toast(`${n} accounts in — check the flagged rows`);
+}
+function tbDiscardPending() { tbPending = null; $('tb-frombox').innerHTML = ''; }
+
+/* ---------- 3. Sample from the actual population ----------
+   Full Set Monster sends every posted journal line with the books, and until
+   now Mr Auditor counted them and threw them away — so the auditor typed their
+   sample by hand out of a ledger the app was already holding.
+
+   ISA 530: everything above performance materiality is examined because it is
+   individually material, not because it was sampled; the rest is sampled from
+   what remains. Both halves are labelled so the working paper shows which is
+   which. */
+function ledgerFor(cats) {
+  const led = S.ledger || [];
+  if (!led.length) return [];
+  const wanted = new Set(cats);
+  return led.filter(l => {
+    const row = S.tb.find(r => r.src && r.src === l.account_code);
+    return row ? wanted.has(row.cat) : false;
+  });
+}
+function smpDraw(ref, cats) {
+  const pop = ledgerFor(cats);
+  if (!pop.length) { toast('No ledger for this area — import the books from Full Set Monster to sample from them'); return; }
+  const mat = materiality();
+  const val = l => Math.abs(num(l.debit) - num(l.credit));
+  const keyItems = pop.filter(l => val(l) >= mat.pm);
+  const rest = pop.filter(l => val(l) < mat.pm);
+  // Deterministic spread over the remainder rather than Math.random(), so the
+  // same file re-opened draws the same sample and the paper stays reproducible.
+  const want = Math.min(rest.length, Math.max(0, 25 - keyItems.length));
+  const step = want ? rest.length / want : 0;
+  const sampled = [];
+  for (let i = 0; i < want; i++) sampled.push(rest[Math.floor(i * step)]);
+
+  const mk = (l, basis) => ({
+    item: `${l.date || ''} ${l.entry_no ? '· ' + l.entry_no + ' ' : ''}${l.description || l.line_description || l.account_name || ''}`.trim(),
+    amt: String(val(l)), result: 'ok',
+    note: basis === 'key' ? 'Above performance materiality — examined, not sampled' : 'Selected from the remaining population',
+  });
+  S.samples[ref] = S.samples[ref] || { rows: [] };
+  S.samples[ref].pop = String(pop.length);
+  S.samples[ref].keyAmt = String(Math.round(mat.pm));
+  S.samples[ref].rows = keyItems.map(l => mk(l, 'key')).concat(sampled.map(l => mk(l, 'sample')));
+  S.samples[ref].basis = `Population ${pop.length} posted lines from the imported ledger. ` +
+    `${keyItems.length} above performance materiality of ${fmtRM(mat.pm)} examined in full; ` +
+    `${sampled.length} selected from the remaining ${rest.length} (ISA 530).`;
+  saveState(); wpShow(ref);
+  logActivity('Drew a sample from the ledger', `${ref} — ${keyItems.length} key item(s), ${sampled.length} sampled from ${pop.length}`);
+  toast(`${S.samples[ref].rows.length} items drawn from ${pop.length} ledger lines`);
+}
+
 /* ---------- Import from Full Set Monster ----------
    FSM keeps the books; Mr Auditor audits them. Handing that over as a PDF and
    re-keying the trial balance is the most wasteful hour of a Malaysian audit,
@@ -2726,6 +2925,11 @@ function fsmBuild(p) {
     documents: Array.isArray(p.source_documents) ? p.source_documents.length : 0,
     exceptions: Array.isArray(p.exceptions) ? p.exceptions : [],
   };
+
+  /* Keep the ledger, do not just count it. Every posted line arrives with the
+     books; holding it is what lets the working papers sample from the actual
+     population instead of the auditor retyping it. */
+  c.ledger = Array.isArray(p.ledger) ? p.ledger : [];
 
   saveState();
   render(current); updateTop();
@@ -3561,14 +3765,33 @@ async function vaultUploadOne(file, cat, clientId) {
 }
 async function vaultUpload(input) {
   if (guardArchived()) { input.value = ''; return; }
-  const cat = $('vault-cat').value || 'Others';
+  const choice = $('vault-cat').value || 'Others';
+  const autoFile = choice === AI_FILING_CHOICE;
+  const cat = autoFile ? 'Others' : choice;
   const files = [...input.files]; input.value = '';
   if (!files.length) return;
   let ok = 0;
-  for (const f of files) if (await vaultUploadOne(f, cat, S.id)) ok++;
-  toast(ok ? `${ok} file(s) filed under ${cat}` : 'Upload failed — check your connection');
+  const uploaded = [];
+  for (const f of files) if (await vaultUploadOne(f, cat, S.id)) { ok++; uploaded.push(f.name); }
+  toast(ok ? (autoFile ? `${ok} file(s) uploaded — reading them now…` : `${ok} file(s) filed under ${cat}`)
+           : 'Upload failed — check your connection');
   if (ok) logActivity('Filed evidence', `${ok} file(s) under "${cat}"`);
   renderVault(); updateTop();
+
+  /* Read each one and move it to where it belongs. Sequential on purpose: a
+     firm filing twenty documents should not fire twenty concurrent AI calls. */
+  if (autoFile && ok) {
+    const rows = (await vaultListRows(S.id)).filter(f => uploaded.includes(f.file_name));
+    let moved = 0;
+    for (const row of rows) {
+      try { const r = await vaultAutoFile(row.id, row.file_name); moved++;
+        logActivity('Mr Auditor filed a document', `${row.file_name} → ${r.category}${r.why ? ' (' + r.why + ')' : ''}`);
+      } catch (e) { /* stays in Others, visibly, rather than being moved on a guess */ }
+      renderVault();
+    }
+    toast(moved ? `${moved} of ${rows.length} filed by Mr Auditor — check the ones marked "filed by AI"`
+                : 'Could not read those — they are in Others for you to file');
+  }
 }
 /* ---------- evidence tick-marks (F3) ---------- */
 /* "Evidence attached" is not "evidence tested" — a tick-mark is the auditor's
@@ -3637,7 +3860,8 @@ async function cloudDeleteEngagementFiles(id) {
 }
 const fmtSize = b => b > 1048576 ? (b/1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b/1024)) + ' KB';
 async function renderVault() {
-  $('vault-cat').innerHTML = DOCCATS.map(c => `<option>${c}</option>`).join('');
+  $('vault-cat').innerHTML = `<option>${AI_FILING_CHOICE}</option>`
+    + DOCCATS.map(c => `<option>${c}</option>`).join('');
   const files = await vaultListRows(S.id);
   _ticksCache = await ticksListAll(S.id);
   $('vault-grid').innerHTML = DOCCATS.map(cat => {
@@ -3661,6 +3885,7 @@ async function renderVault() {
           <div class="flex items-center gap-2 py-1.5">
             <svg viewBox="0 0 24 24" width="15" height="15" class="flex-none" fill="none" stroke="#3B49C9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
             <button class="text-[12.5px] font-medium text-indigo hover:underline truncate flex-1 text-left" onclick="vaultView('${f.id}')" title="View ${esc(f.file_name)}">${esc(f.file_name)}</button>
+            ${f.category_source === 'ai' ? `<span class="pill pill-info !text-[10px] flex-none" title="Mr Auditor read this document and chose the category. Move it if it belongs elsewhere.">filed by AI</span>` : ''}
             <span class="text-[11px] text-mut mono flex-none">${fmtSize(f.size_bytes)}</span>
             ${tickBadges(_ticksCache[f.id])}
             <button class="btn btn-ghost !px-1.5 !py-1 flex-none" onclick="vaultTickToggle('${f.id}')" aria-label="Tick-mark" title="Tick-mark this evidence">
@@ -5715,9 +5940,14 @@ async function wpLead([ref, title, cats, evCat]) {
       <div class="flex flex-wrap items-center gap-3 mt-2">
         <button class="btn btn-ghost !py-1.5" onclick="smpRowAdd('${ref}')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> Add tested item</button>
+        ${(S.ledger || []).length ? `<button class="btn btn-pri !py-1.5" onclick="smpDraw('${ref}', ${JSON.stringify(cats).replace(/"/g, '&quot;')})"
+          title="Select from the posted ledger that came with the books: everything above performance materiality, plus a spread across the rest">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M7 12h10M11 18h2"/></svg>
+          Draw from the ledger</button>` : ''}
         <span class="text-[12.5px] mono ml-auto">tested ${fmtRM(sampledAmt)} · exceptions ${fmtRM(excAmt)}
           ${excAmt > 0 ? ` · <span class="${projected > mat.pm ? 'text-risk' : 'text-warn'} font-semibold">projected misstatement ${fmtRM(projected)}</span>` : ''}</span>
       </div>
+      ${smp.basis ? `<p class="text-[12px] text-mut mt-1">${esc(smp.basis)}</p>` : ''}
       ${projected > 0 ? `<p class="text-[12px] ${projected > mat.overall ? 'text-risk' : 'text-warn'} mt-1">Projected misstatement ${projected > mat.overall ? 'EXCEEDS overall materiality — extend testing or propose an adjustment (Audit Engine → AJE register)' : 'is below overall materiality — carry to the ISA 450 evaluation (B2) as an uncorrected item if not adjusted'}.</p>` : ''}
     </div>
     ${wpNotes(`plan.notes.${ref}`, 'Facts extracted from evidence, testing observations…')}`);
@@ -5802,13 +6032,15 @@ async function aiRequest(question) {
    (full PDF/image reading, not a filename reference). Returns
    { answer, skipped, documentsRead } — skipped[] must always be surfaced to
    the user, never swallowed, so nothing is "read" silently only in name. */
-async function aiRequestDocs(question, documentIds) {
+async function aiRequestDocs(question, documentIds, maxTokens) {
   const { data: { session } } = await sb.auth.getSession();
   if (!session) throw new Error('Sign in to use the AI');
   const res = await fetch(`${SUPABASE_URL}/functions/v1/ask-mr-auditor`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': SUPABASE_ANON_KEY },
-    body: JSON.stringify({ question, context: aiContext(), documentIds: documentIds && documentIds.length ? documentIds : undefined }),
+    body: JSON.stringify({ question, context: aiContext(),
+      documentIds: documentIds && documentIds.length ? documentIds : undefined,
+      maxTokens: maxTokens || undefined }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.error) throw new Error(data.error || `AI service error (${res.status})`);

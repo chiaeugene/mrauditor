@@ -11,7 +11,9 @@
 // request as a native `document` (PDF) or `image` block. Claude reads PDFs
 // and images natively, page by page; we do not run our own OCR/extraction,
 // which is the more reliable choice and the one least likely to silently
-// drop information. Any file that can't be attached (unsupported type, or
+// drop information. Excel and Word are converted to text here first, because
+// Claude cannot read those natively and they are exactly what an audit client
+// emails — a trial balance out of SQL Account is a spreadsheet. Any file that can't be attached (unsupported type, or
 // would push the request over Anthropic's hard size ceiling) is EXCLUDED
 // EXPLICITLY and reported back in `skipped` — never silently dropped.
 import Anthropic from "npm:@anthropic-ai/sdk";
@@ -47,7 +49,78 @@ Boundaries: this tool prepares draft audit work for a licensed auditor (s.263 ap
 const MAX_TOTAL_RAW_BYTES = 20 * 1024 * 1024; // 20MB combined raw evidence per request
 const MAX_SINGLE_FILE_BYTES = 15 * 1024 * 1024; // a single file this large is almost certainly not meant for inline reading
 
+// ── Office formats ──────────────────────────────────────────────────────────
+// Claude reads PDFs and images natively, but not .xlsx or .docx — and those are
+// what a Malaysian audit client actually emails you. A trial balance exported
+// from SQL Account or Autocount is a spreadsheet; a board resolution is a Word
+// file. Rather than refuse them, we convert to text HERE and hand that over,
+// which is lossless for the things that matter (cells, numbers, paragraphs) and
+// keeps the "never silently drop information" rule: anything we cannot convert
+// is still reported in `skipped`.
+const MAX_EXTRACT_CHARS = 400_000; // ~100k tokens of text from one workbook
+
+function clip(text: string, name: string): string {
+  if (text.length <= MAX_EXTRACT_CHARS) return text;
+  return text.slice(0, MAX_EXTRACT_CHARS) +
+    `\n\n[TRUNCATED — ${name} is larger than ${MAX_EXTRACT_CHARS} characters of text. ` +
+    `Everything above is complete; anything below this point was not sent. ` +
+    `Split the file or narrow the request if the missing part matters.]`;
+}
+
+/** Every sheet of a workbook as CSV, sheet names kept. */
+async function xlsxToText(buf: Uint8Array, name: string): Promise<string> {
+  const XLSX = await import("npm:xlsx@0.18.5");
+  const wb = XLSX.read(buf, { type: "array", cellDates: true, cellNF: false });
+  const parts: string[] = [];
+  for (const sheetName of wb.SheetNames) {
+    const ws = wb.Sheets[sheetName];
+    if (!ws) continue;
+    const csv = XLSX.utils.sheet_to_csv(ws, { blankrows: false, rawNumbers: true });
+    if (!csv.trim()) continue;
+    parts.push(`--- sheet: ${sheetName} ---\n${csv}`);
+  }
+  if (!parts.length) throw new Error("the workbook has no readable cells");
+  return clip(parts.join("\n\n"), name);
+}
+
+/** Word body text. Paragraph and row breaks are preserved; formatting is not. */
+async function docxToText(buf: Uint8Array, name: string): Promise<string> {
+  const { default: JSZip } = await import("npm:jszip@3.10.1");
+  const zip = await JSZip.loadAsync(buf);
+  const parts: string[] = [];
+  // The body, then any headers/footers, in document order.
+  const names = ["word/document.xml"].concat(
+    Object.keys(zip.files).filter((f) => /^word\/(header|footer)\d*\.xml$/.test(f)).sort(),
+  );
+  for (const f of names) {
+    const entry = zip.file(f);
+    if (!entry) continue;
+    const xml = await entry.async("string");
+    const text = xml
+      .replace(/<w:tab\b[^>]*\/>/g, "\t")
+      .replace(/<w:br\b[^>]*\/>/g, "\n")
+      .replace(/<\/w:p>/g, "\n")
+      .replace(/<\/w:tr>/g, "\n")
+      .replace(/<\/w:tc>/g, "\t")
+      .replace(/<[^>]+>/g, "")
+      .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    if (text) parts.push(text);
+  }
+  if (!parts.length) throw new Error("no readable text in the document");
+  return clip(parts.join("\n\n"), name);
+}
+
 function guessMime(name: string, fallback: string | null): string {
+  const ext0 = (name.split(".").pop() || "").toLowerCase();
+  // Extension wins for office formats: browsers frequently upload .xlsx as
+  // application/octet-stream, which would otherwise be rejected as unreadable.
+  if (ext0 === "docx") return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (ext0 === "xlsx") return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  if (ext0 === "xls") return "application/vnd.ms-excel";
   if (fallback) return fallback;
   const ext = (name.split(".").pop() || "").toLowerCase();
   const map: Record<string, string> = {
@@ -74,7 +147,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { question, context, documentIds } = await req.json();
+    const { question, context, documentIds, maxTokens } = await req.json();
     if (!question || typeof question !== "string") {
       return json({ error: "question is required" }, 400);
     }
@@ -143,10 +216,30 @@ Deno.serve(async (req) => {
           totalRaw += buf.byteLength;
           const text = new TextDecoder().decode(buf);
           docBlocks.push({ type: "text", text: `--- Document: ${row.file_name} ---\n${text}\n--- end of ${row.file_name} ---` });
+        } else if (/spreadsheetml|ms-excel/.test(mime) || /[.](xlsx|xls)$/i.test(row.file_name)) {
+          try {
+            const text = await xlsxToText(buf, row.file_name);
+            totalRaw += buf.byteLength;
+            docBlocks.push({ type: "text", text: `--- Spreadsheet: ${row.file_name} (every sheet, as CSV) ---
+${text}
+--- end of ${row.file_name} ---` });
+          } catch (e) {
+            skipped.push({ name: row.file_name, reason: `spreadsheet could not be read (${e instanceof Error ? e.message : String(e)})` });
+          }
+        } else if (/wordprocessingml/.test(mime) || /[.]docx$/i.test(row.file_name)) {
+          try {
+            const text = await docxToText(buf, row.file_name);
+            totalRaw += buf.byteLength;
+            docBlocks.push({ type: "text", text: `--- Document: ${row.file_name} (Word) ---
+${text}
+--- end of ${row.file_name} ---` });
+          } catch (e) {
+            skipped.push({ name: row.file_name, reason: `Word document could not be read (${e instanceof Error ? e.message : String(e)})` });
+          }
         } else {
           skipped.push({
             name: row.file_name,
-            reason: `file type (${mime}) can't be read directly by the AI — supported types are PDF, images (PNG/JPEG/GIF/WEBP), and text/CSV`,
+            reason: `file type (${mime}) can't be read directly by the AI — supported types are PDF, images (PNG/JPEG/GIF/WEBP), Excel (XLSX/XLS), Word (DOCX) and text/CSV`,
           });
         }
       }
@@ -155,7 +248,10 @@ Deno.serve(async (req) => {
     const client = new Anthropic({ apiKey });
     const response = await client.messages.create({
       model: "claude-opus-4-8",
-      max_tokens: docBlocks.length ? 4000 : 1500,
+      // A trial-balance extraction returns far more than an answer to a
+      // question, so the caller may ask for more room. Capped so a runaway
+      // request cannot bill unbounded output.
+      max_tokens: Math.min(Number(maxTokens) || (docBlocks.length ? 4000 : 1500), 16000),
       system: SYSTEM,
       messages: [
         {

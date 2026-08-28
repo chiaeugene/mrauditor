@@ -522,7 +522,7 @@ tailwind.config = {
       <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
         <div>
           <h2 class="font-bold text-[17px]">Evidence vault</h2>
-          <p class="text-[13px] text-mut">Audit evidence filed per engagement, held in the firm’s private encrypted store — not on this device. Everyone on the engagement sees the same files, and links to them expire after 60 seconds. Click to view or download any file.</p>
+          <p class="text-[13px] text-mut">Audit evidence filed per engagement, held in the firm’s private encrypted store — not on this device. Everyone on the engagement sees the same files, and links to them expire after 60 seconds. Click to view or download any file. Mr Auditor reads PDF, Excel, Word, CSV and photographs.</p>
         </div>
         <div class="flex items-center gap-2">
           <select class="field !w-64" id="vault-cat"></select>
@@ -644,6 +644,9 @@ tailwind.config = {
             <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
               <h2 class="font-bold text-[15px]">Trial balance — current year</h2>
               <div class="flex gap-2">
+                <button class="btn btn-pri !py-1.5" onclick="tbBuildFromDocs()" title="Read the trial balance or management accounts filed in the Evidence Vault — PDF, Excel, Word or a photo — and turn them into rows">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/><path d="M9 15h6M9 11h2"/></svg> Build from documents
+                </button>
                 <button class="btn btn-ghost !py-1.5" onclick="tbAiReview()" title="A second opinion on every classification, read against this company's business">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.7L19.6 10l-5.7 1.9L12 17.6l-1.9-5.7L4.4 10l5.7-1.9z"/></svg> AI: review classifications
                 </button>
@@ -653,6 +656,7 @@ tailwind.config = {
                 <button class="btn btn-risk !py-1.5" onclick="clearTb()">Clear all</button>
               </div>
             </div>
+            <div id="tb-frombox" class="mb-3"></div>
             <div id="tb-airev" class="mb-3"></div>
             <div id="tb-balance-banner" class="mb-3"></div>
             <div class="overflow-x-auto">
