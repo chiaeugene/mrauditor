@@ -3147,7 +3147,7 @@ async function renderFirm() {
         <span class="pill ${ROLE_PILLS[firmRole()] || 'pill-mut'}">you: ${firmRole()}</span>
         <button class="btn btn-ghost !py-1 !px-2 !text-[11.5px]" onclick="changeOwnPassword()">Change my password</button>
       </div>
-      <p class="text-[12.5px] text-mut mb-3">${firmRecord && firmRecord.af_no ? esc(firmRecord.af_no) + ' · ' : ''}${users.length} login(s). Everyone here can open every engagement belonging to the firm; review-locking still applies per working paper.</p>
+      <p class="text-[12.5px] text-mut mb-3">${firmRecord && firmRecord.af_no ? esc(firmRecord.af_no) + ' · ' : ''}${users.length} login(s). These are <strong>your own colleagues</strong> at this firm — everyone here can open every engagement belonging to it, and review-locking still applies per working paper.${isPlatform() ? ' To set up a <strong>different firm</strong>, use the Agency console instead — a login made here joins yours.' : ''}</p>
       <table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
       <tbody>${users.map(u => `<tr>
         <td class="text-[12.5px]">${esc(u.name || '—')}</td>
@@ -3158,7 +3158,6 @@ async function renderFirm() {
         <td>${u.active ? '<span class="pill pill-ok">active</span>' : '<span class="pill pill-risk">disabled</span>'}
             ${u.must_change_password ? '<span class="pill pill-warn !text-[10px]">must set password</span>' : ''}</td>
         <td class="text-right">${admin && u.id !== authUser.id ? `
-          <button class="btn btn-ghost !py-0.5 !px-1.5 !text-[11px]" onclick="firmResetPassword('${u.id}','${esc(u.email)}')">Reset password</button>
           <button class="btn btn-ghost !py-0.5 !px-1.5 !text-[11px]" onclick="firmSetActive('${u.id}', ${!u.active})">${u.active ? 'Disable' : 'Enable'}</button>` : ''}</td>
       </tr>`).join('')}</tbody></table>
       ${admin ? `
@@ -3202,17 +3201,6 @@ async function firmCreateUser() {
     $('fu-email').value = ''; $('fu-name').value = ''; if ($('fu-pw')) $('fu-pw').value = '';
     renderFirm();
   } catch (e) { box.innerHTML = `<div class="text-[12.5px] text-risk">${esc(e.message)}</div>`; }
-}
-async function firmResetPassword(id, email) {
-  if (!await askConfirm(`Reset the password for ${email}? Their current password stops working immediately.`,
-      { title:'Reset password', confirmLabel:'Reset it' })) return;
-  try {
-    const r = await adminCall('reset_password', { user_id: id });
-    logActivityFirm('Reset a password', email);
-    credShow('New temporary password — hand it over', r.email, r.password,
-      'Their old password stopped working. They must choose a new one at next sign-in.');
-    renderFirm();
-  } catch (e) { toast(e.message); }
 }
 async function firmSetActive(id, active) {
   if (!active && !await askConfirm('Disable this login? They will be signed out and unable to sign in again.',
@@ -3260,8 +3248,8 @@ async function renderAgency() {
     </div>
     ${isPlatform() ? `
     <div class="card card-pad mb-4">
-      <div class="font-semibold text-[14px] mb-1">Issue a login</div>
-      <p class="text-[12px] text-mut mb-2.5">Step one of three. You create the person; they name their own firm on first sign-in; the firm registers its own client companies.</p>
+      <div class="font-semibold text-[14px] mb-1">Issue a login to a new firm</div>
+      <p class="text-[12px] text-mut mb-2.5">For a practice that is <strong>not yours</strong>. Step one of three: you create the person &rarr; they fill in their own firm details on first sign-in &rarr; they create their own colleagues. To add someone to <strong>your own</strong> firm, use Firm &amp; Users.</p>
       <div class="flex flex-wrap gap-2 items-end">
         <div class="flex-1 min-w-[200px]"><label class="fieldlbl">Their email</label><input class="field" id="ag-email" type="email" placeholder="wong@wongpartners.my"></div>
         <div class="flex-1 min-w-[160px]"><label class="fieldlbl">Their name</label><input class="field" id="ag-name" placeholder="Wong Mei Yee"></div>
@@ -3283,7 +3271,7 @@ async function renderAgency() {
         <td class="text-[12.5px] text-mut mono">${esc(u.email)}</td>
         <td class="num mono">${u.pending_monthly_price ? fmtRM(u.pending_monthly_price) : '—'}</td>
         <td class="text-[12.5px] text-mut">${u.created_at ? dMY(u.created_at.slice(0,10)) : '—'}</td>
-        <td class="text-right"><button class="btn btn-ghost !py-0.5 !px-1.5 !text-[11px]" onclick="agencyResendPassword('${u.id}','${esc(u.email)}')">New password</button></td>
+        <td class="text-right"></td>
       </tr>`).join('')}</tbody></table>`
       : '<p class="text-[12.5px] text-mut">Everyone you have issued a login to has set up their firm.</p>'}
     </div>` : ''}
@@ -3375,33 +3363,7 @@ async function agencyCreateLogin() {
     renderAgency();
   } catch (e) { box.innerHTML = '<div class="text-[12.5px] text-risk">' + esc(e.message) + '</div>'; }
 }
-async function agencyResendPassword(userId, email) {
-  if (!await askConfirm('Issue a new password for ' + email + '? The one you sent them stops working immediately.',
-      { title:'New password', confirmLabel:'Issue it' })) return;
-  try {
-    const r = await adminCall('reset_password', { user_id: userId });
-    credShow('New password — hand it over', r.email, r.password,
-      'Their previous password no longer works. They set up their firm after signing in.');
-    renderAgency();
-  } catch (e) { toast(e.message); }
-}
 
-async function agencyCreateFirm() {
-  const box = $('ag-firm-result');
-  const firm_name = $('ag-firm').value.trim(), email = $('ag-email').value.trim();
-  if (!firm_name || !email) { toast('Firm name and administrator email are required'); return; }
-  box.innerHTML = '<span class="text-[12.5px] text-mut">Creating…</span>';
-  try {
-    const r = await adminCall('create_firm', { firm_name, email,
-      name: $('ag-name').value.trim(), af_no: $('ag-af').value.trim(),
-      monthly_price: num($('ag-price').value), agent_id: $('ag-agent').value || null });
-    credShow(`${r.firm_name} is live — hand these over`, r.email, r.password,
-      'They set their own password at first sign-in, then create their own staff under Firm & Users.');
-    ['ag-firm','ag-af','ag-email','ag-name'].forEach(i => $(i).value = '');
-    logActivityFirm('Created a firm', `${r.firm_name} (${r.email})`);
-    renderAgency();
-  } catch (e) { box.innerHTML = `<div class="text-[12.5px] text-risk">${esc(e.message)}</div>`; }
-}
 async function agencyCreateAgent() {
   const box = $('ag-agent-result');
   const email = $('ag-a-email').value.trim();

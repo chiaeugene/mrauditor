@@ -115,16 +115,10 @@ Deno.serve(async (req) => {
       return json({ ok: true, email, password, note: "Hand these over. They must change the password at first sign-in." });
     }
 
-    if (action === "reset_password") {
-      if (!isAdmin) return json({ error: "Only a firm admin can reset a password" }, 403);
-      const { target, error } = await loadTarget(String(body.user_id ?? ""));
-      if (error) return json({ error }, 400);
-      const password = tempPassword();
-      const { error: uErr } = await admin.auth.admin.updateUserById(target!.id, { password });
-      if (uErr) throw new Error(uErr.message);
-      await admin.from("app_users").update({ must_change_password: true }).eq("id", target!.id);
-      return json({ ok: true, email: target!.email, password });
-    }
+    // reset_password is deliberately gone. The password set when a login is
+    // created IS the password — nothing regenerates one behind the person's
+    // back. If someone forgets theirs, an administrator creates a new login;
+    // the person themselves can change it from Firm & Users.
 
     if (action === "set_active") {
       if (!isAdmin) return json({ error: "Only a firm admin can enable or disable a login" }, 403);
