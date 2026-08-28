@@ -844,7 +844,7 @@ const TITLES = { home:'Mr Auditor', register:'Register a company', dashboard:'Da
   audit:'Audit Engine', wps:'Audit File — Working Papers', fs:'Financial Statements', tax:'Tax Computation',
   reports:'Reports & Sign-off', pack:'Full Audit Pack', vault:'Evidence Vault', toolkit:'Auditor Toolkit',
   defence:'Defence & Positions', ref:'Regulatory Compass', queries:'Queries, PBC & Audit Trail',
-  compliance:'Compliance & Data', firm:'Firm & Users', agency:'Agency Console' };
+  compliance:'Compliance & Data', firm:'My Firm & Colleagues', agency:'Customers · New Firms' };
 let current = 'dashboard';
 function show(scr) {
   current = scr;
@@ -3140,6 +3140,13 @@ async function renderFirm() {
   const admin = isFirmAdmin();
   el.innerHTML = `
   ${credBanner()}
+  ${isPlatform() ? `<div class="card card-pad mb-4" style="border:1.5px solid #D70015;background:#FFF5F5">
+    <div class="font-semibold text-[14px] mb-1" style="color:#D70015">This screen is your own firm</div>
+    <div class="text-[13px] leading-relaxed">Anyone you create here joins <strong>${esc((firmRecord && firmRecord.name) || 'your firm')}</strong> and can open its engagements.
+      If you meant to sign up a <strong>customer</strong> — a different practice, with its own files —
+      that is the other screen.</div>
+    <button class="btn btn-pri !py-1.5 mt-3" onclick="show('agency')">Go to Customers &middot; New firms</button>
+  </div>` : ''}
   <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
     <div class="card card-pad lg:col-span-2">
       <div class="flex items-center justify-between mb-1">
@@ -3248,14 +3255,14 @@ async function renderAgency() {
     </div>
     ${isPlatform() ? `
     <div class="card card-pad mb-4">
-      <div class="font-semibold text-[14px] mb-1">Issue a login to a new firm</div>
-      <p class="text-[12px] text-mut mb-2.5">For a practice that is <strong>not yours</strong>. Step one of three: you create the person &rarr; they fill in their own firm details on first sign-in &rarr; they create their own colleagues. To add someone to <strong>your own</strong> firm, use Firm &amp; Users.</p>
+      <div class="font-semibold text-[14px] mb-1">Sign up a new customer firm</div>
+      <p class="text-[12px] text-mut mb-2.5">Creating this login <strong>is</strong> creating a new firm &mdash; a practice that is <strong>not yours</strong>. You create the person &rarr; they key in their own firm details &rarr; they register their own client companies. Nothing here touches your own firm.</p>
       <div class="flex flex-wrap gap-2 items-end">
         <div class="flex-1 min-w-[200px]"><label class="fieldlbl">Their email</label><input class="field" id="ag-email" type="email" placeholder="wong@wongpartners.my"></div>
         <div class="flex-1 min-w-[160px]"><label class="fieldlbl">Their name</label><input class="field" id="ag-name" placeholder="Wong Mei Yee"></div>
         <div><label class="fieldlbl">RM / month</label><input class="field mono !w-24" id="ag-price" type="number" value="599"></div>
         <div class="flex-1 min-w-[150px]"><label class="fieldlbl">Password <span class="text-mut font-normal">(blank = generated)</span></label><input class="field mono" id="ag-pw" autocomplete="off" placeholder="leave blank"></div>
-        <button class="btn btn-pri" onclick="agencyCreateLogin()">Create login</button>
+        <button class="btn btn-pri" onclick="agencyCreateLogin()">Create the firm&rsquo;s login</button>
       </div>
       <div id="ag-firm-result" class="mt-2"></div>
       <p class="text-[11.5px] text-mut mt-2">Shows the password once, to hand over. They replace it at first sign-in, then set up their firm.</p>
