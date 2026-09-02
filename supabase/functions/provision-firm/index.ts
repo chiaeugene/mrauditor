@@ -118,7 +118,7 @@ Deno.serve(async (req) => {
     return json({
       ok: true, firm_id: firm.id, firm_name: firm.name, email, password,
       login_url: "https://mrauditor.onrender.com",
-      note: "Hand these over. The administrator must change the password at first sign-in, and can then create the rest of the firm's logins.",
+      note: "Hand these over. This password works as-is — nothing forces a change. They set up their firm on first sign-in, then create the rest of its logins.",
     });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);

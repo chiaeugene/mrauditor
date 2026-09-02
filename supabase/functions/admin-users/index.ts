@@ -118,7 +118,7 @@ Deno.serve(async (req) => {
         await admin.auth.admin.deleteUser(created.user!.id);
         throw new Error(pErr.message);
       }
-      return json({ ok: true, email, password, note: "Hand these over. They must change the password at first sign-in." });
+      return json({ ok: true, email, password, note: "Hand these over. This password works as-is — nothing forces a change." });
     }
 
     // reset_password is deliberately gone. The password set when a login is

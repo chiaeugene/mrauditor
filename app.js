@@ -6403,8 +6403,16 @@ async function cloudPushEngagement(client) {
 async function cloudDeleteEngagement(id) {
   if (!sb || !authUser) return null;
   const { error } = await sb.from('engagements').delete().eq('id', id);
-  if (error) console.error('cloud delete failed', error);
-  return error || null;
+  if (error) { console.error('cloud delete failed', error); return error; }
+  /* A delete that matches no row under RLS reports success. Someone deleting a
+     colleague's file therefore got a cheerful nothing: the engagement vanished
+     from their screen and stayed in the database until the next refresh. Ask
+     whether it is actually gone rather than trusting the absence of an error. */
+  const { data } = await sb.from('engagements').select('id').eq('id', id);
+  if (data && data.length) {
+    return { message: 'RANK_REQUIRED: the database would not delete that engagement.' };
+  }
+  return null;
 }
 async function cloudLoadEngagements() {
   if (!sb || !authUser) return [];
