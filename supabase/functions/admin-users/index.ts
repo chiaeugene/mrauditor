@@ -30,7 +30,11 @@ function tempPassword(): string {
   return `${pick(a, 4)}-${pick(d, 4)}`;
 }
 
-const FIRM_ROLES = ["admin", "partner", "manager", "staff"];
+/* The audit ranks. "admin" used to sit in here and was quietly treated as a
+   partner everywhere downstream — so whoever managed the firm's logins could
+   also sign off files. It is now the separate is_firm_admin flag below, which
+   a partner, a manager or a member of staff can each carry. */
+const FIRM_ROLES = ["partner", "manager", "staff"];
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
@@ -53,7 +57,7 @@ Deno.serve(async (req) => {
     if (!me || !me.active) return json({ error: "Your account is not active" }, 403);
 
     const isPlatform = me.role === "super_admin";
-    const isAdmin = me.role === "admin" || isPlatform;
+    const isAdmin = me.is_firm_admin === true || isPlatform;
     const body = await req.json().catch(() => ({}));
     const action = String(body.action ?? "");
 
@@ -72,7 +76,7 @@ Deno.serve(async (req) => {
     };
 
     if (action === "list") {
-      const q = admin.from("app_users").select("id,email,name,role,active,must_change_password,created_at")
+      const q = admin.from("app_users").select("id,email,name,role,is_firm_admin,active,must_change_password,created_at")
         .order("created_at");
       const { data, error } = isPlatform && !body.firm_id ? await q : await q.eq("firm_id", targetFirm);
       if (error) throw new Error(error.message);
@@ -85,6 +89,7 @@ Deno.serve(async (req) => {
       const email = String(body.email ?? "").trim().toLowerCase();
       const name = String(body.name ?? "").trim();
       const role = String(body.role ?? "staff");
+      const isFirmAdmin = body.is_firm_admin === true;
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json({ error: "Enter a valid email address" }, 400);
       if (!FIRM_ROLES.includes(role)) return json({ error: "Unknown role" }, 400);
       // Only the platform may mint another platform user or an agent.
@@ -102,6 +107,7 @@ Deno.serve(async (req) => {
       }
       const { error: pErr } = await admin.from("app_users").insert({
         id: created.user!.id, firm_id: targetFirm, email, name, role,
+        is_firm_admin: isFirmAdmin,
         active: true, // The password handed over is the password used — no forced reset on a
         // login someone deliberately created and passed on.
         must_change_password: false,
@@ -136,12 +142,20 @@ Deno.serve(async (req) => {
 
     if (action === "set_role") {
       if (!isAdmin) return json({ error: "Only a firm admin can change a role" }, 403);
-      const role = String(body.role ?? "");
-      if (!FIRM_ROLES.includes(role)) return json({ error: "Unknown role" }, 400);
+      // Either half may be sent on its own: the rank and the admin flag are
+      // two separate decisions now.
+      const patch: Record<string, unknown> = {};
+      if (body.role !== undefined) {
+        const role = String(body.role ?? "");
+        if (!FIRM_ROLES.includes(role)) return json({ error: "Unknown role" }, 400);
+        patch.role = role;
+      }
+      if (body.is_firm_admin !== undefined) patch.is_firm_admin = body.is_firm_admin === true;
+      if (!Object.keys(patch).length) return json({ error: "Nothing to change" }, 400);
       const { target, error } = await loadTarget(String(body.user_id ?? ""));
       if (error) return json({ error }, 400);
-      await admin.from("app_users").update({ role }).eq("id", target!.id);
-      return json({ ok: true, role });
+      await admin.from("app_users").update(patch).eq("id", target!.id);
+      return json({ ok: true, ...patch });
     }
 
     // ── Platform actions: running the subscription business ──────────────────
@@ -180,7 +194,7 @@ Deno.serve(async (req) => {
         // The password the platform sets is the password they use. No forced
         // reset: this is a login handed over deliberately, not a recovery.
         // They can change it themselves under Firm & Users whenever they like.
-        role: "admin", active: true, must_change_password: false,
+        role: "partner", is_firm_admin: true, active: true, must_change_password: false,
         pending_monthly_price: price,
       });
       if (pErr) {
@@ -252,7 +266,7 @@ Deno.serve(async (req) => {
       // point of the new order, and they would otherwise be invisible.
       const { data: pending } = await admin.from("app_users")
         .select("id,email,name,created_at,pending_monthly_price")
-        .is("firm_id", null).eq("role", "admin").order("created_at");
+        .is("firm_id", null).eq("is_firm_admin", true).order("created_at");
       return json({ firms: Object.values(firms), awaitingSetup: pending ?? [] });
     }
 
@@ -292,6 +306,21 @@ Deno.serve(async (req) => {
         .eq("id", String(body.firm_id ?? ""));
       if (error) throw new Error(error.message);
       return json({ ok: true, monthly_price: price });
+    }
+
+    if (action === "set_firm_companies") {
+      if (!isPlatform) return json({ error: "Platform only" }, 403);
+      const n = Number(body.max_companies);
+      if (!Number.isInteger(n) || n < 1 || n > 999) {
+        return json({ error: "Enter a whole number of companies between 1 and 999" }, 400);
+      }
+      const firmId = String(body.firm_id ?? "");
+      // Lowering the cap never deletes anything — it only stops the next one.
+      const { count } = await admin.from("engagements")
+        .select("id", { count: "exact", head: true }).eq("firm_id", firmId).not("name", "is", null);
+      const { error } = await admin.from("firms").update({ max_companies: n }).eq("id", firmId);
+      if (error) throw new Error(error.message);
+      return json({ ok: true, max_companies: n, currently_registered: count ?? null });
     }
 
     if (action === "record_payment") {

@@ -101,7 +101,7 @@ Deno.serve(async (req) => {
       id: created.user!.id, firm_id: firm.id, email, name,
       // The password Elaine hands the customer over is final — no forced
       // reset, same rule as every other login in Mr Auditor.
-      role: "admin", active: true, must_change_password: false,
+      role: "partner", is_firm_admin: true, active: true, must_change_password: false,
     });
     if (pErr) {
       await db.auth.admin.deleteUser(created.user!.id);

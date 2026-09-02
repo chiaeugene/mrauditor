@@ -1127,6 +1127,11 @@ function tbApplySuggestion(i, cat) {
 }
 function addTbRow(){ if (guardArchived()) return; S.tb.push({id:nid(), name:'', cat:'ADMIN', dr:'', cr:'', py:'', autoWeak:false}); renderTB(); }
 async function clearTb(){ if (guardArchived()) return;
+  if (!canClearTb()) {
+    await askConfirm('Clearing the trial balance discards every posted adjustment with it, so it takes a manager or a partner.',
+      { title:'Ask a manager', confirmLabel:'I understand' });
+    return;
+  }
   if (!S.tb.length || await askConfirm('Remove all trial balance rows and posted adjustments?',
       { title:'Clear the trial balance', confirmLabel:'Clear it', danger:true }))
   { S.tb = []; S.adjustments = []; S.findingStatus = {}; renderTB(); saveState(); } }
@@ -2414,6 +2419,12 @@ function clientStats(c) {
   return st;
 }
 function renderClients() {
+  const pu = $('plan-usage');
+  if (pu) {
+    const cap = companyCap(), used = companiesUsed();
+    pu.textContent = Number.isFinite(cap) ? `${used} of ${cap} companies on your plan` : '';
+    pu.className = 'text-[12.5px] ' + (Number.isFinite(cap) && used >= cap ? 'text-warn font-medium' : 'text-mut');
+  }
   $('clients-grid').innerHTML = DB.clients.map(c => {
     const st = clientStats(c);
     const active = c.id === DB.activeId;
@@ -2447,14 +2458,29 @@ function renderClients() {
 function newClientPrompt() { regOpen(); }
 async function deleteClient(id) {
   const c = DB.clients.find(x => x.id === id);
+  if (!canDeleteEngagement()) {
+    await askConfirm('Deleting an audit file destroys its evidence with it, so only a partner can do it. Ask the partner on this engagement.',
+      { title:'A partner has to do this', confirmLabel:'I understand' });
+    return;
+  }
   if (!await askConfirm(`Delete the engagement "${c?.setup.name || 'Untitled'}" and all its attached evidence? This cannot be undone.`,
       { title:'Delete this engagement', confirmLabel:'Delete it', danger:true })) return;
+  /* The row goes first. The evidence used to be purged before the database was
+     asked, so a delete the server refused still destroyed the files. */
+  const err = await cloudDeleteEngagement(id);
+  if (err) { toast(readableDbError(err)); return; }
   DB.clients = DB.clients.filter(x => x.id !== id);
   if (!DB.clients.length) newClient('');
   if (DB.activeId === id) { DB.activeId = DB.clients[0].id; S = activeClient(); }
   saveState(); render(current); updateTop();
   await cloudDeleteEngagementFiles(id).catch(()=>{});
-  await cloudDeleteEngagement(id).catch(()=>{});
+}
+/* Postgres speaks in error codes and prefixes; auditors do not. */
+function readableDbError(e) {
+  const m = (e && e.message) || String(e || '');
+  if (/COMPANY_LIMIT_REACHED/.test(m)) return capMessage();
+  if (/RANK_REQUIRED/.test(m)) return 'Only a partner can delete an engagement.';
+  return m || 'Something went wrong.';
 }
 
 /* ---------- immutable activity trail (F4) ---------- */
@@ -2535,17 +2561,43 @@ function stampFirmIdentity(list) {
   });
   return n;
 }
-const isFirmAdmin = () => ['super_admin','admin'].includes(firmRole());
+/* Managing the firm's logins and signing off its audit files are two different
+   jobs. Until round 9 they were one word — "admin" — which quietly made the
+   office manager a partner. The flag and the rank are now independent. */
+const isFirmAdmin = () => !!(firmProfile && (firmProfile.is_firm_admin || firmProfile.role === 'super_admin'));
 const isPlatform = () => firmRole() === 'super_admin';
 const isAgent = () => firmRole() === 'agent';
-/* The audit role used for review-locking. An engagement-level membership
-   always wins; otherwise the firm role decides, and a legacy account with no
-   profile keeps the partner rights it has always had on its own files. */
+/* The audit rank. An engagement-level membership always wins; otherwise the
+   firm rank decides, and a legacy account with no profile keeps the partner
+   rights it has always had on its own files. */
 function firmAuditRole() {
   const r = firmRole();
-  if (r === 'owner-legacy' || r === 'super_admin' || r === 'admin' || r === 'partner') return 'partner';
+  if (r === 'owner-legacy' || r === 'super_admin' || r === 'partner') return 'partner';
   if (r === 'manager') return 'manager';
   return 'staff';
+}
+/* What a rank is actually allowed to do to a whole file. These are the two
+   irreversible acts in the app — deleting an engagement takes its evidence
+   with it, and clearing a trial balance discards every posted adjustment —
+   so they are the two the database also enforces (round 9). */
+const canDeleteEngagement = () => firmAuditRole() === 'partner';
+const canClearTb = () => ['partner','manager'].includes(firmAuditRole());
+
+/* ---------- the plan: how many client companies this firm may register ---- */
+const companyCap = () => (firmRecord && Number.isFinite(Number(firmRecord.max_companies))
+  ? Number(firmRecord.max_companies) : Infinity);
+const companiesUsed = () => DB.clients.filter(c => (c.setup.name || '').trim()).length;
+/* Translates the trigger's own message, so the wording is the same whether the
+   block came from the browser or from Postgres. */
+function capMessage() {
+  const cap = companyCap(), used = companiesUsed();
+  return `Your plan covers ${cap} client ${cap === 1 ? 'company' : 'companies'}, and ${used} `
+    + `${used === 1 ? 'is' : 'are'} registered. Delete one you have finished with, or ask Mr Auditor to raise the limit.`;
+}
+function guardCompanyCap() {
+  if (companiesUsed() < companyCap()) return false;
+  askConfirm(capMessage(), { title:'Your plan is full', confirmLabel:'I understand' });
+  return true;
 }
 async function adminCall(action, payload) {
   const { data: { session } } = await sb.auth.getSession();
@@ -3136,8 +3188,9 @@ async function renderFirm() {
   let users = [];
   try { users = (await adminCall('list', {})).users || []; }
   catch (e) { el.innerHTML = `<div class="card card-pad"><div class="text-[13px] text-warn">Could not load users: ${esc(e.message)}</div></div>`; return; }
-  const ROLE_PILLS = { admin:'pill-ok', partner:'pill-info', manager:'pill-info', staff:'pill-mut', super_admin:'pill-ok', agent:'pill-warn' };
+  const ROLE_PILLS = { partner:'pill-ok', manager:'pill-info', staff:'pill-mut', super_admin:'pill-ok', agent:'pill-warn' };
   const admin = isFirmAdmin();
+  const cap = companyCap(), used = companiesUsed();
   el.innerHTML = `
   ${credBanner()}
   ${isPlatform() ? `<div class="card card-pad mb-4" style="border:1.5px solid #D70015;background:#FFF5F5">
@@ -3151,17 +3204,28 @@ async function renderFirm() {
     <div class="card card-pad lg:col-span-2">
       <div class="flex items-center justify-between mb-1">
         <h2 class="font-bold text-[15px]">${esc((firmRecord && firmRecord.name) || 'Your firm')}</h2>
-        <span class="pill ${ROLE_PILLS[firmRole()] || 'pill-mut'}">you: ${firmRole()}</span>
+        <span class="pill ${ROLE_PILLS[firmRole()] || 'pill-mut'}">you: ${firmRole()}${isFirmAdmin() ? ' + admin' : ''}</span>
         <button class="btn btn-ghost !py-1 !px-2 !text-[11.5px]" onclick="changeOwnPassword()">Change my password</button>
       </div>
-      <p class="text-[12.5px] text-mut mb-3">${firmRecord && firmRecord.af_no ? esc(firmRecord.af_no) + ' · ' : ''}${users.length} login(s). These are <strong>your own colleagues</strong> at this firm — everyone here can open every engagement belonging to it, and review-locking still applies per working paper.${isPlatform() ? ' To set up a <strong>different firm</strong>, use the Agency console instead — a login made here joins yours.' : ''}</p>
+      <p class="text-[12.5px] text-mut mb-3">${firmRecord && firmRecord.af_no ? esc(firmRecord.af_no) + ' · ' : ''}${users.length} login(s). These are <strong>your own colleagues</strong> at this firm — everyone here can open every engagement belonging to it, and prepare on it.${isPlatform() ? ' To set up a <strong>different firm</strong>, use the Agency console instead — a login made here joins yours.' : ''}</p>
+      <div class="rounded-lg bg-paper border border-line p-3 mb-3 text-[12px] leading-relaxed">
+        <div class="font-semibold text-[12.5px] mb-1.5">What each rank may do</div>
+        <div><span class="pill pill-ok !text-[10px]">partner</span> Signs. Finalises and reopens a file, reviews and locks working papers, and is the only rank that can <strong>delete an engagement</strong>.</div>
+        <div class="mt-1"><span class="pill pill-info !text-[10px]">manager</span> Reviews. Locks working papers and may clear a trial balance. Cannot finalise or delete.</div>
+        <div class="mt-1"><span class="pill pill-mut !text-[10px]">staff</span> Prepares. Imports, uploads evidence, drafts working papers. Cannot review-lock, finalise, clear a trial balance or delete.</div>
+        <div class="mt-1.5 pt-1.5 border-t border-line"><strong>admin</strong> is a separate tick, not a rank — it lets someone create logins and set ranks. Tick it on your partner if you run the firm yourself.</div>
+      </div>
       <table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
       <tbody>${users.map(u => `<tr>
         <td class="text-[12.5px]">${esc(u.name || '—')}</td>
         <td class="text-[12.5px] text-mut">${esc(u.email)}</td>
-        <td>${admin && u.id !== authUser.id ? `<select class="field !py-0.5 !text-[11.5px] !w-24" onchange="firmSetRole('${u.id}', this.value)">
-            ${['admin','partner','manager','staff'].map(r => `<option ${u.role===r?'selected':''}>${r}</option>`).join('')}</select>`
-          : `<span class="pill ${ROLE_PILLS[u.role]||'pill-mut'}">${u.role}</span>`}</td>
+        <td class="whitespace-nowrap">${admin && u.id !== authUser.id ? `<select class="field !py-0.5 !text-[11.5px] !w-24" onchange="firmSetRole('${u.id}', this.value)">
+            ${['partner','manager','staff'].map(r => `<option ${u.role===r?'selected':''}>${r}</option>`).join('')}</select>`
+          : `<span class="pill ${ROLE_PILLS[u.role]||'pill-mut'}">${u.role}</span>`}
+          ${admin && u.id !== authUser.id
+            ? `<label class="text-[11px] text-mut ml-1.5 whitespace-nowrap" title="May create logins and set ranks. Nothing to do with signing files.">
+                 <input type="checkbox" ${u.is_firm_admin ? 'checked' : ''} onchange="firmSetAdmin('${u.id}', this.checked)"> admin</label>`
+            : (u.is_firm_admin ? '<span class="pill pill-info !text-[10px] ml-1">admin</span>' : '')}</td>
         <td>${u.active ? '<span class="pill pill-ok">active</span>' : '<span class="pill pill-risk">disabled</span>'}
             ${u.must_change_password ? '<span class="pill pill-warn !text-[10px]">must set password</span>' : ''}</td>
         <td class="text-right">${admin && u.id !== authUser.id ? `
@@ -3173,36 +3237,41 @@ async function renderFirm() {
         <div class="flex flex-wrap gap-2 items-end">
           <div class="flex-1 min-w-[160px]"><label class="fieldlbl">Email</label><input class="field" id="fu-email" type="email" placeholder="colleague@firm.my"></div>
           <div class="flex-1 min-w-[140px]"><label class="fieldlbl">Name</label><input class="field" id="fu-name" placeholder="Full name"></div>
-          <div><label class="fieldlbl">Role</label><select class="field !w-28" id="fu-role">
+          <div><label class="fieldlbl">Rank</label><select class="field !w-28" id="fu-role">
             <option value="staff">staff</option><option value="manager">manager</option>
-            <option value="partner">partner</option><option value="admin">admin</option></select></div>
+            <option value="partner">partner</option></select></div>
+          <div><label class="fieldlbl">Admin</label>
+            <label class="field !w-24 flex items-center gap-1.5 text-[12px] text-mut" title="May create logins and set ranks">
+              <input type="checkbox" id="fu-admin"> manages logins</label></div>
           <div class="flex-1 min-w-[150px]"><label class="fieldlbl">Password <span class="text-mut font-normal">(blank = generated)</span></label><input class="field mono" id="fu-pw" autocomplete="off" placeholder="leave blank"></div>
           <button class="btn btn-pri" onclick="firmCreateUser()">Create login</button>
         </div>
         <div id="fu-result" class="mt-2"></div>
-        <p class="text-[11.5px] text-mut mt-2">A password is generated for you to hand over. They sign in with it and must immediately choose their own — you never see their real password, and there is no self-signup.</p>
+        <p class="text-[11.5px] text-mut mt-2">The password you type is the password they use — nothing is regenerated and nothing forces a change. Leave it blank and one is generated for you to hand over. There is no self-signup.</p>
       </div>` : '<p class="text-[12px] text-mut mt-3">Only a firm administrator can create or disable logins.</p>'}
     </div>
     <div class="card card-pad">
       <h2 class="font-bold text-[15px] mb-2">Subscription</h2>
       ${firmRecord ? `<table class="fs-doc" style="width:100%">
         <tr><td>Plan</td><td class="num mono">${firmRecord.monthly_price ? fmtRM(firmRecord.monthly_price) + '/mo' : 'not set'}</td></tr>
+        <tr><td>Companies</td><td class="num mono">${Number.isFinite(cap) ? `${used} of ${cap}` : String(used)}</td></tr>
         <tr><td>Since</td><td class="num mono">${firmRecord.subscription_started_on ? dMY(firmRecord.subscription_started_on) : '—'}</td></tr>
         <tr><td>Status</td><td class="num">${firmRecord.active ? '<span class="pill pill-ok">active</span>' : '<span class="pill pill-risk">suspended</span>'}</td></tr>
       </table>
-      <p class="text-[11.5px] text-mut mt-2">Billing is handled by your reseller or by Mr Auditor directly. Price and status are set by the platform, not from here.</p>`
+      <p class="text-[11.5px] text-mut mt-2">Billing is handled by your reseller or by Mr Auditor directly. Price, status and the number of companies your plan covers are set by the platform, not from here.</p>`
       : '<p class="text-[12.5px] text-mut">No firm record.</p>'}
     </div>
   </div>`;
 }
 async function firmCreateUser() {
   const email = $('fu-email').value.trim(), name = $('fu-name').value.trim(), role = $('fu-role').value;
+  const is_firm_admin = !!($('fu-admin') && $('fu-admin').checked);
   if (!email) { toast('Enter an email address'); return; }
   const box = $('fu-result');
   box.innerHTML = '<span class="text-[12.5px] text-mut">Creating…</span>';
   try {
-    const r = await adminCall('create', { email, name, role, password: ($('fu-pw') ? $('fu-pw').value.trim() : '') || undefined });
-    logActivityFirm('Created a login', `${email} as ${role}`);
+    const r = await adminCall('create', { email, name, role, is_firm_admin, password: ($('fu-pw') ? $('fu-pw').value.trim() : '') || undefined });
+    logActivityFirm('Created a login', `${email} as ${role}${is_firm_admin ? ' + admin' : ''}`);
     credShow('Login created — hand these over', r.email, r.password,
       'This password works as-is. They can change it themselves under Firm & Users. Shown once, so copy it now.');
     $('fu-email').value = ''; $('fu-name').value = ''; if ($('fu-pw')) $('fu-pw').value = '';
@@ -3216,8 +3285,15 @@ async function firmSetActive(id, active) {
   catch (e) { toast(e.message); }
 }
 async function firmSetRole(id, role) {
-  try { await adminCall('set_role', { user_id: id, role }); logActivityFirm('Changed a role', role); renderFirm(); }
+  try { await adminCall('set_role', { user_id: id, role }); logActivityFirm('Changed a rank', role); renderFirm(); }
   catch (e) { toast(e.message); renderFirm(); }
+}
+async function firmSetAdmin(id, is_firm_admin) {
+  try {
+    await adminCall('set_role', { user_id: id, is_firm_admin });
+    logActivityFirm(is_firm_admin ? 'Made someone a firm admin' : 'Removed firm admin');
+    renderFirm();
+  } catch (e) { toast(e.message); renderFirm(); }
 }
 
 /* ---------- Agency console (platform + resellers) ---------- */
@@ -3287,13 +3363,16 @@ async function renderAgency() {
         <h2 class="font-bold text-[15px]">Firms</h2>
         ${isPlatform() ? '<span class="text-[11.5px] text-mut">Suspending a firm locks its staff out at sign-in — nothing is deleted.</span>' : ''}
       </div>
-      ${list.length ? `<table class="tbl"><thead><tr><th>Firm</th><th>AF no.</th><th class="num">Monthly</th><th>Since</th><th>Status</th>${isPlatform() ? '<th></th>' : ''}</tr></thead>
+      ${list.length ? `<table class="tbl"><thead><tr><th>Firm</th><th>AF no.</th><th class="num">Monthly</th><th class="num">Companies</th><th>Since</th><th>Status</th>${isPlatform() ? '<th></th>' : ''}</tr></thead>
       <tbody>${list.map(f => `<tr>
         <td class="text-[12.5px] font-medium">${esc(f.name)}</td>
         <td class="text-[12.5px] text-mut mono">${esc(f.af_no || '—')}</td>
         <td class="num mono">${isPlatform()
           ? `<input class="field mono !py-0.5 !text-[12px] !w-24 !text-right" value="${f.monthly_price || 0}" onchange="agencySetPrice('${f.id}', this.value)">`
           : (f.monthly_price ? fmtRM(f.monthly_price) : '—')}</td>
+        <td class="num mono text-[12px]">${dirLoaded ? (dirOf[f.id] || []).length : '–'} / ${isPlatform()
+          ? `<input class="field mono !py-0.5 !text-[12px] !w-14 !text-right !inline-block" value="${f.max_companies ?? 3}" onchange="agencySetCompanies('${f.id}', this.value)">`
+          : (f.max_companies ?? 3)}</td>
         <td class="text-[12.5px] text-mut">${f.subscription_started_on ? dMY(f.subscription_started_on) : '—'}</td>
         <td>${f.active ? '<span class="pill pill-ok">active</span>' : '<span class="pill pill-risk">suspended</span>'}</td>
         ${isPlatform() ? `<td class="text-right whitespace-nowrap">
@@ -3301,12 +3380,12 @@ async function renderAgency() {
           <button class="btn btn-ghost !py-0.5 !px-1.5 !text-[11px]" onclick="agencySetActive('${f.id}', ${!f.active})">${f.active ? 'Suspend' : 'Reactivate'}</button>
         </td>` : ''}
       </tr>
-      <tr><td colspan="${isPlatform() ? 6 : 5}" class="!pt-0 !pb-3">
+      <tr><td colspan="${isPlatform() ? 7 : 6}" class="!pt-0 !pb-3">
         ${(dirOf[f.id] || []).length ? `<div class="flex flex-wrap gap-1.5 pl-3">
           ${(dirOf[f.id] || []).map(c => `<span class="pill pill-mut !text-[11px]">${esc(c.name || '(unnamed)')}${c.fye ? ' · FYE ' + dMY(c.fye) : ''}</span>`).join('')}
         </div>` : `<div class="text-[11.5px] text-mut pl-3">${dirLoaded ? 'No client companies registered yet.' : ''}</div>`}
       </td></tr>`).join('')}</tbody></table>
-      <p class="text-[11.5px] text-mut mt-2">Client company names and year ends only — the audit files themselves belong to the firm, and the platform cannot open them.</p>`
+      <p class="text-[11.5px] text-mut mt-2">Client company names and year ends only — the audit files themselves belong to the firm, and the platform cannot open them. The Companies column is registered / covered by the plan; the database refuses the one after the limit, so this number is the sale, not a suggestion.</p>`
       : '<p class="text-[12.5px] text-mut">No firms yet. Issue a login above; the firm appears once that person sets it up.</p>'}
     </div>
     ${isPlatform() ? `
@@ -3391,6 +3470,13 @@ async function agencySetActive(firm_id, active) {
   try { await adminCall('set_firm_active', { firm_id, active });
     logActivityFirm(active ? 'Reactivated a firm' : 'Suspended a firm'); renderAgency(); }
   catch (e) { toast(e.message); }
+}
+async function agencySetCompanies(firm_id, max_companies) {
+  try {
+    const r = await adminCall('set_firm_companies', { firm_id, max_companies: Math.round(num(max_companies)) });
+    toast(`Plan now covers ${r.max_companies} compan${r.max_companies === 1 ? 'y' : 'ies'}`);
+    renderAgency();
+  } catch (e) { toast(e.message); renderAgency(); }
 }
 async function agencySetPrice(firm_id, monthly_price) {
   try { await adminCall('set_firm_price', { firm_id, monthly_price: num(monthly_price) }); toast('Price updated'); renderAgency(); }
@@ -4326,6 +4412,7 @@ let regDraft = null;
 const REG_ATTACH_CATS = ['Trial balance & management accounts','Prior-year FS & working papers','Bank statements & confirmations',
   'SSM & statutory records','Tax — CP204 / Form C / assessments','Fixed asset register & invoices','Others'];
 function regOpen() {
+  if (guardCompanyCap()) return;
   regStep = 1;
   regDraft = { directors:[{name:'',ic:''},{name:'',ic:''}], files:[] };
   show('register');
@@ -6299,13 +6386,25 @@ async function cloudPushEngagement(client) {
       delete ins.firm_id;
       ({ error: insErr } = await sb.from('engagements').insert(ins));
     }
-    if (insErr) console.error('cloud save failed', insErr);
+    if (insErr) {
+      console.error('cloud save failed', insErr);
+      // A refused insert used to leave a company that existed on screen and
+      // nowhere else. Say so, and take it back out.
+      if (/COMPANY_LIMIT_REACHED/.test(insErr.message || '')) {
+        toast(capMessage());
+        DB.clients = DB.clients.filter(x => x.id !== client.id);
+        if (!DB.clients.length) newClient('');
+        if (DB.activeId === client.id) { DB.activeId = DB.clients[0].id; S = activeClient(); }
+        saveState(); render(current); updateTop();
+      }
+    }
   }
 }
 async function cloudDeleteEngagement(id) {
-  if (!sb || !authUser) return;
+  if (!sb || !authUser) return null;
   const { error } = await sb.from('engagements').delete().eq('id', id);
   if (error) console.error('cloud delete failed', error);
+  return error || null;
 }
 async function cloudLoadEngagements() {
   if (!sb || !authUser) return [];

@@ -403,7 +403,10 @@ tailwind.config = {
       </div>
 
       <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <h2 class="font-bold text-[17px]">Engagements</h2>
+        <div class="flex items-baseline gap-2.5">
+          <h2 class="font-bold text-[17px]">Engagements</h2>
+          <span id="plan-usage" class="text-[12.5px] text-mut"></span>
+        </div>
         <button class="btn btn-ghost" onclick="regOpen()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
           New engagement
