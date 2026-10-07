@@ -61,6 +61,7 @@ function switchClient(id) {
   const c = DB.clients.find(x => x.id === id);
   if (!c) return;
   DB.activeId = id; S = c;
+  try { localStorage.setItem('mr-auditor-active', id); } catch (e) {}
   saveState();
 }
 function activeClient(){ return DB.clients.find(c => c.id === DB.activeId); }
@@ -96,8 +97,9 @@ const fmt = (n, dash) => {
 };
 const fmtRM = n => 'RM ' + fmt(n);
 const pct = (n, d=1) => isFinite(n) ? n.toFixed(d) + '%' : '–';
-const toast = m => { const t = $('toast'); t.textContent = m; t.classList.remove('hidden');
-  clearTimeout(t._h); t._h = setTimeout(()=>t.classList.add('hidden'), 2600); };
+/* Longer messages stay longer: 2.6 s was not enough to read a sentence. */
+const toast = m => { const t = $('toast'); t.textContent = m; t.classList.add('toast-on');
+  clearTimeout(t._h); t._h = setTimeout(()=>t.classList.remove('toast-on'), Math.min(8000, 2600 + String(m).length * 35)); };
 const dISO = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 const dMY = iso => { if(!iso) return '—'; const d = new Date(iso+'T00:00:00');
   return d.toLocaleDateString('en-MY', {day:'numeric', month:'long', year:'numeric'}); };
@@ -217,7 +219,7 @@ const RULES = [
   [/^(?!.*(income|subcon|payable|receivable))(?=.*\bfees?\b)/i,'ADMIN'],
   [/fixed deposit|\bfd\b/i,'FD'],
   [/overdraft|\bod\b/i,'OD'],
-  [/accumulated dep|acc\.? dep|accum dep/i,'ACCDEP'],
+  [/accum(ulated|\.)?\s*dep|acc\.?\s*dep|prov(ision|\.)? for dep/i,'ACCDEP'],   // AutoCount prints ACCUM. DEPRECIATION
   [/depreciation|amortisation|amortization/i,'DEPR'],
   [/hire purchase|h\/p|hp (payable|creditor|liab)/i,'HP'],
   [/term loan|bank loan|borrowing|loan payable|financing-i|financing i\b|bankers'? acceptance|trust receipt|floor ?(stock|plan) financing|revolving credit|invoice financing/i,'BORR'],
@@ -258,6 +260,8 @@ const RULES = [
   [/^sales\b|sales revenue|^revenue|turnover|jualan|service (income|revenue|fee)|contract revenue|project income|(transport|haulage|freight|forwarding|trucking|logistic|courier|charter|delivery|rental of (lorr|truck|vehicle))[^,]{0,30}(income|revenue)|(income|revenue) from (transport|haulage|freight|deliver)/i,'REV'],
   [/purchase|cost of (sale|good)|direct (labour|labor|wage|cost)|subcontract|carriage inward|freight inward|opening stock|production/i,'COS'],
   [/advertis|marketing|promotion|commission paid|delivery|carriage outward|freight outward|exhibition/i,'SELL'],
+  // a bare statutory-fund name is the amount owed if it is a credit, the cost if a debit
+  [/^(sip|eis|socso|perkeso|epf|kwsp|pcb|hrdf|hrd corp)\s*$/i,'STAT*'],
   [/salar|wages|bonus|gaji|epf|kwsp|socso|perkeso|\beis\b|allowance|staff|medical/i,'ADMIN'],
   [/rent(al)?\b|utilit|electric|water|telephone|internet|insurance|professional|audit fee|secretarial|accounting fee|travel|printing|stationer|postage|courier|license|licence|bank charge|general expense|office|donation|entertainment|fine|penalt|foreign exchange|forex|bad debt|training|subscription/i,'ADMIN'],
 ];
@@ -266,6 +270,7 @@ function classify(name, drAmt, crAmt) {
     if (re.test(name)) {
       if (cat === 'DIR*') return crAmt > drAmt ? 'DIROWE' : 'DIRADV';
       if (cat === 'RPT*') return crAmt > drAmt ? 'RPTPAY' : 'RPTREC';
+      if (cat === 'STAT*') return crAmt > drAmt ? 'OP' : 'ADMIN';
       return cat;
     }
   }
@@ -339,6 +344,9 @@ const CLASSIFY_TESTS = [
   ['USD export proceeds account (translated)',100,0,'CASH'],
   ['Petty cash & yard float',100,0,'CASH'],
   ['Accounts payable',0,100,'TP'],
+  // found in the first outside firm's AutoCount trial balance
+  ['ACCUM. DEPRECIATION - MV',0,100,'ACCDEP'],['Accum Depreciation - Office Equipment',0,100,'ACCDEP'],
+  ['SIP',0,100,'OP'],['EPF',0,100,'OP'],['SOCSO',100,0,'ADMIN'],["STAFFS' SIP",100,0,'ADMIN'],
 ];
 /* Amount-parsing cases: every export format that has ever been mis-parsed.
    A regression here corrupts every figure in a client's file, so it runs
@@ -907,29 +915,9 @@ function renderDashboard() {
   ].join('');
   animateKpis('dash-kpis');
 
-  // pipeline — mirrors how a real engagement runs: setup → evidence → numbers → audit → outputs
-  const t = tbTotals();
-  const steps = [
-    { n:1, lbl:'Engagement set up', done: !!(S.setup.name && S.setup.fye), scr:'setup',
-      sub: S.setup.name ? `${S.setup.name} · ${S.setup.framework}` : 'company particulars, framework, exemption check' },
-    { n:2, lbl:'Evidence collected in the vault', done: _vaultN > 0, scr:'vault',
-      sub: _vaultN > 0 ? `${_vaultN} file(s) filed` : 'bank statements, prior-year FS, SSM records — the documents the audit rests on' },
-    { n:3, lbl:'Trial balance imported & balanced', done: has && Math.abs(t.diff)<=0.5, scr:'tb',
-      sub: has ? `${S.tb.length} accounts · ${Math.abs(t.diff)<=0.5?'balanced':'OUT OF BALANCE ' + fmtRM(t.diff)}` : 'paste from Excel / accounting system' },
-    { n:4, lbl:'Audit engine run — findings cleared', done: has && ev.open.filter(f=>['blocker','high'].includes(f.sev)).length===0, scr:'audit',
-      sub: has ? `${ev.open.length} open finding(s), ${S.adjustments.length} adjustment(s) posted` : 'materiality, analytics, smart checks' },
-    { n:5, lbl:'Audit file — planning & working papers', done: !!(S.plan.mat && S.plan.mat.applied) && Object.keys(S.wpSign).length >= 3, scr:'wps',
-      sub: S.plan.mat && S.plan.mat.applied ? `materiality documented · ${Object.keys(S.wpSign).length} paper(s) signed` : 'materiality questionnaire, risk & scoping, lead schedules' },
-    { n:6, lbl:'Financial statements generated', done: has && Math.abs(model().balGap)<=1, scr:'fs',
-      sub: has ? (Math.abs(model().balGap)<=1 ? 'SOFP articulates' : `SOFP gap ${fmtRM(model().balGap)}`) : 'MPERS-format FS' },
-    { n:7, lbl:'Tax computation prepared', done: has && (num(S.tax.ca)>0 || num(S.tax.cp204)>0 || S.tax._touched), scr:'tax',
-      sub:'SME tiers 15% / 17% / 24% · Sch 3 capital allowances' },
-    { n:8, lbl:'Reports ready for licensed auditor', done: !!(S.sign.partner && S.sign.firm), scr:'reports',
-      sub: S.sign.partner ? `${S.sign.partner}, ${S.sign.firm}` : 'auditor’s report, directors’ report, statutory declaration' }
-  ];
-  const doneCt = steps.filter(s=>s.done).length;
-  const nextStep = steps.find(s => !s.done);
-  $('dash-pipeline-pct').textContent = Math.round(doneCt/steps.length*100) + '%';
+  // one list of stages for the dashboard and the top bar — see journey() in intake.js
+  const { steps, next: nextStep, pct: journeyPct } = journey();
+  $('dash-pipeline-pct').textContent = journeyPct + '%';
   $('dash-pipeline').innerHTML = steps.map(s => `
     <div class="flex items-start gap-3 cursor-pointer group ${nextStep === s ? 'bg-indigosoft/60 -mx-2 px-2 py-1.5 rounded-xl' : ''}" onclick="show('${s.scr}')">
       <div class="step-dot ${s.done?'bg-okbg text-ok':'bg-indigosoft text-indigo'}">
@@ -2586,7 +2574,7 @@ const canClearTb = () => ['partner','manager'].includes(firmAuditRole());
 /* ---------- the plan: how many client companies this firm may register ---- */
 const companyCap = () => (firmRecord && Number.isFinite(Number(firmRecord.max_companies))
   ? Number(firmRecord.max_companies) : Infinity);
-const companiesUsed = () => DB.clients.filter(c => (c.setup.name || '').trim()).length;
+const companiesUsed = () => DB.clients.filter(c => (c.setup.name || '').trim() && !c.demo).length;
 /* Translates the trigger's own message, so the wording is the same whether the
    block came from the browser or from Postgres. */
 function capMessage() {
@@ -4057,7 +4045,7 @@ async function renderVault() {
           <div class="flex items-center gap-2 py-1.5">
             <svg viewBox="0 0 24 24" width="15" height="15" class="flex-none" fill="none" stroke="#3B49C9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
             <button class="text-[12.5px] font-medium text-indigo hover:underline truncate flex-1 text-left" onclick="vaultView('${f.id}')" title="View ${esc(f.file_name)}">${esc(f.file_name)}</button>
-            ${f.category_source === 'ai' ? `<span class="pill pill-info !text-[10px] flex-none" title="Mr Auditor read this document and chose the category. Move it if it belongs elsewhere.">filed by AI</span>` : ''}
+            ${f.category_source === 'ai' ? `<span class="pill pill-info !text-[10px] flex-none" title="Mr Auditor read this document and chose the category. Move it if it belongs elsewhere.">filed by AI</span>` : f.category_source === 'auto' ? `<span class="pill pill-mut !text-[10px] flex-none" title="Filed from the file's name. Move it if it belongs elsewhere.">sorted by name</span>` : ''}
             <span class="text-[11px] text-mut mono flex-none">${fmtSize(f.size_bytes)}</span>
             ${tickBadges(_ticksCache[f.id])}
             <button class="btn btn-ghost !px-1.5 !py-1 flex-none" onclick="vaultTickToggle('${f.id}')" aria-label="Tick-mark" title="Tick-mark this evidence">
@@ -6456,6 +6444,7 @@ async function loadDemo() {
   DB.clients = DB.clients.filter(c => c.setup.name || c.tb.length);
   const c = Object.assign(BLANK(), { id:nid(), created:Date.now() });
   DB.clients.push(c); DB.activeId = c.id; S = c;
+  S.demo = true;   // not counted against the plan — see round 10
   const fyeYear = new Date().getFullYear() - 1;
   S.setup = { name:'TPO Sdn Bhd', regno:'201901022334 (1329988-P)',
     incdate:'2019-03-12', fye:`${fyeYear}-12-31`, activity:'operation of a restaurant and catering services',
@@ -6762,8 +6751,14 @@ async function afterAuth() {
   // deliberately deleted engagements from a stale browser cache)
   let cloud = await cloudLoadEngagements();
   if (!cloud.length) cloud = [Object.assign(BLANK(), { id:nid(), created:Date.now() })];
-  DB = { ver:2, activeId: cloud[0].id, clients: cloud };
-  S = cloud[0];
+  /* Come back to the file you were in. This used to open the OLDEST engagement
+     every time — for a new firm that is the empty shell created at sign-up, so
+     a returning auditor landed in a blank file instead of their client. */
+  let lastId = null; try { lastId = localStorage.getItem('mr-auditor-active'); } catch (e) {}
+  const named = cloud.filter(c => (c.setup.name || '').trim());
+  const start = cloud.find(c => c.id === lastId) || named[named.length - 1] || cloud[0];
+  DB = { ver:2, activeId: start.id, clients: cloud };
+  S = start;
   stampFirmIdentity(DB.clients);   // before the save, so it sticks
   saveState();
   render(current);
